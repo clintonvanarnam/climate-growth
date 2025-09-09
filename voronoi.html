@@ -31,6 +31,17 @@ new p5((p)=>{
   let maskImage = null;
   // mask mode: 'text' or 'image'
   let MASK_MODE = 'text';
+  // image scale multiplier (user-adjustable)
+  let maskImageScale = 1.6;
+  let maskScaleSlider = null;
+  // debug: show raw source image on top so we can confirm it's loading
+  let showRawImage = true;
+  let showRawImageCheckbox = null;
+  // mask threshold and invert controls for image masks
+  let maskThreshold = 140;
+  let maskThresholdSlider = null;
+  let invertMask = false;
+  let invertMaskCheckbox = null;
   // preload: try several project-relative paths (Live Server can't serve absolute system paths)
   p.preload = () => {
     const candidates = [
@@ -296,6 +307,31 @@ new p5((p)=>{
       drawMaskText(); rebuildSeeds();
     }
   });
+
+  // mask image scale slider (only relevant when Image mode is selected)
+  maskScaleSlider = p.createSlider(0.5, 3.0, maskImageScale, 0.05);
+  maskScaleSlider.style('width', '160px');
+  maskScaleSlider.position(12 + 680, 12 + 210);
+  maskScaleSlider.input(()=>{
+    maskImageScale = maskScaleSlider.value();
+    if (MASK_MODE === 'image' && maskImage){ drawMaskImage(); rebuildSeeds(); }
+  });
+
+  // show raw image checkbox for debugging image load
+  showRawImageCheckbox = p.createCheckbox('Show raw image', showRawImage);
+  showRawImageCheckbox.position(12 + 680, 12 + 300);
+  showRawImageCheckbox.changed(()=>{ showRawImage = showRawImageCheckbox.checked(); });
+
+  // threshold slider for luminance fallback
+  maskThresholdSlider = p.createSlider(0, 255, maskThreshold, 1);
+  maskThresholdSlider.style('width', '160px');
+  maskThresholdSlider.position(12 + 680, 12 + 240);
+  maskThresholdSlider.input(()=>{ maskThreshold = maskThresholdSlider.value(); if (MASK_MODE === 'image' && maskImage){ drawMaskImage(); rebuildSeeds(); } });
+
+  // invert mask checkbox
+  invertMaskCheckbox = p.createCheckbox('Invert mask', invertMask);
+  invertMaskCheckbox.position(12 + 680, 12 + 270);
+  invertMaskCheckbox.changed(()=>{ invertMask = invertMaskCheckbox.checked(); if (MASK_MODE === 'image' && maskImage){ drawMaskImage(); rebuildSeeds(); } });
   // log initial defaults for easy copy
   console.log('defaults -> RENDER_SCALE:', RENDER_SCALE, 'NUM_SEEDS:', NUM_SEEDS, 'cellSize:', (cellSizeSlider?cellSizeSlider.value():Math.round(Math.sqrt((W*H)/Math.max(1,NUM_SEEDS)))), 'strokeWeight:', STROKE_WEIGHT);
   };
@@ -457,6 +493,21 @@ new p5((p)=>{
     p.image(vorImg, 0, 0);
   }
 
+  // debugging: optionally draw the raw source image on top so user can confirm it loaded
+  if (MASK_MODE === 'image' && maskImage && showRawImage){
+    p.push();
+    p.tint(255, 220);
+    // compute cover-fit same as drawMaskImage
+    const iw = maskImage.width, ih = maskImage.height;
+    const sw = maskLayer.width, sh = maskLayer.height;
+    const scale = Math.max(sw / iw, sh / ih) * (maskImageScale || 1);
+    const dw = Math.round(iw * scale), dh = Math.round(ih * scale);
+    const dx = Math.round((sw - dw) * 0.5), dy = Math.round((sh - dh) * 0.5);
+    // draw scaled image directly to main canvas (scale down from maskLayer coords)
+    p.image(maskImage, dx / (maskLayer.width / W), dy / (maskLayer.height / H), dw / (maskLayer.width / W), dh / (maskLayer.height / H));
+    p.pop();
+  }
+
   // HUD: show tuning values and key hints (render only when RENDER_UI is true)
   if (RENDER_UI) {
     p.push();
@@ -519,21 +570,55 @@ new p5((p)=>{
     maskLayer.push();
     maskLayer.clear();
     // black background, white mask
-    maskLayer.background(20);
+    // use pure black background so thresholding is predictable
+    maskLayer.background(0);
     maskLayer.noStroke();
     if (!maskImage) { maskLayer.pop(); return; }
-    // compute fit: cover behavior, center-crop the image to fill maskLayer
+    // compute cover-fit so the image fills the mask layer (center-cropped)
     const iw = maskImage.width, ih = maskImage.height;
     const sw = maskLayer.width, sh = maskLayer.height;
-    const scale = Math.max(sw / iw, sh / ih);
-    const dw = iw * scale, dh = ih * scale;
-    const dx = (sw - dw) * 0.5, dy = (sh - dh) * 0.5;
-    // draw image in white alpha mask: draw image, then threshold to white
+  const scale = Math.max(sw / iw, sh / ih) * (maskImageScale || 1);
+  const dw = Math.round(iw * scale), dh = Math.round(ih * scale);
+  const dx = Math.round((sw - dw) * 0.5), dy = Math.round((sh - dh) * 0.5);
+    // draw the source image onto the mask layer
     maskLayer.push();
     maskLayer.imageMode(p.CORNER);
     maskLayer.tint(255);
     maskLayer.image(maskImage, dx, dy, dw, dh);
     maskLayer.pop();
+
+    // threshold pixels: treat darker pixels (black logo) as mask -> set white; otherwise black
+    try{
+      maskLayer.loadPixels();
+      const pixels = maskLayer.pixels;
+      // detect whether there's useful alpha in the image
+      let alphaCount = 0;
+      for (let i = 0; i < pixels.length; i += 4){ if (pixels[i+3] > 10) alphaCount++; }
+      const useAlpha = alphaCount > (pixels.length / 4) * 0.01; // >1% opaque
+      if (useAlpha){
+        for (let i = 0; i < pixels.length; i += 4){
+          const a = pixels[i+3];
+          let maskOn = (a > 10);
+          if (invertMask) maskOn = !maskOn;
+          if (maskOn){ pixels[i] = pixels[i+1] = pixels[i+2] = 255; pixels[i+3] = 255; }
+          else { pixels[i] = pixels[i+1] = pixels[i+2] = 0; pixels[i+3] = 255; }
+        }
+        console.log('drawMaskImage: using alpha channel for mask (alphaCount=', alphaCount, ')');
+      } else {
+        // fallback to luminance thresholding
+        for (let i = 0; i < pixels.length; i += 4){
+          const r = pixels[i], g = pixels[i+1], b = pixels[i+2];
+          const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+          let maskOn = (lum < maskThreshold);
+          if (invertMask) maskOn = !maskOn;
+          if (maskOn){ pixels[i] = pixels[i+1] = pixels[i+2] = 255; pixels[i+3] = 255; }
+          else { pixels[i] = pixels[i+1] = pixels[i+2] = 0; pixels[i+3] = 255; }
+        }
+        console.log('drawMaskImage: using luminance thresholding (threshold=', maskThreshold, ')');
+      }
+      maskLayer.updatePixels();
+    }catch(e){ console.warn('mask image thresholding failed', e); }
+
     maskLayer.pop();
   }
 
