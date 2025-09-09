@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Animated Voronoi Text — p5.js</title>
+  <!-- d3-delaunay for Voronoi (vector, no external rhill lib) -->
+  <script src="https://cdn.jsdelivr.net/npm/d3-delaunay@6/dist/d3-delaunay.min.js"></script>
+  <!-- p5.js -->
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.3/lib/p5.min.js"></script>
+  <style>
+    html,body{margin:0;background:rgb(20,92,0);}
+    canvas{display:block}
+  </style>
+</head>
+<body>
+<script>
+console.log('voronoi.html loaded — Delaunay Voronoi (vector)', {ts: new Date().toISOString()});
+// Delaunay-based Voronoi renderer using d3-delaunay for crisp polygons
+new p5((p)=>{
+  let W,H; let seeds=[], baseSeeds=[]; let t=0, running=true; let vorLayer, maskLayer; let phrase = "DESIGNING NYC’S CLIMATE FUTURE", subphrase='', year='';
+  // maskPhrase is used to build the sampling mask (controls density). Keep it separate
+  // from the visible `phrase` so the typography can affect density even when
+  // nothing is drawn on-screen.
+  let maskPhrase = phrase;
+  // custom font (loaded from user's local Fonts folder)
+  let customFont = null;
+  let fontLoaded = false;
+  let fontApplied = false;
+  // optional image mask
+  let maskImage = null;
+  // mask mode: 'text' or 'image'
+  let MASK_MODE = 'text';
+  // preload: try several project-relative paths (Live Server can't serve absolute system paths)
+  p.preload = () => {
+    const candidates = [
+      'assets/WXYWalterNeue-Extrabold.otf',
+      'WXYWalterNeue-Extrabold.otf',
+      'fonts/WXYWalterNeue-Extrabold.otf',
+      // fallback to absolute path (may fail under http server)
+      '/Users/Clinton/Library/Fonts/WXYWalterNeue-Extrabold.otf'
+    ];
+    function tryLoad(i){
+      if (i >= candidates.length) { console.warn('All font load attempts failed'); return; }
+      const path = candidates[i];
+      try{
+        customFont = p.loadFont(path,
+          ()=>{ console.log('Custom font loaded from', path); fontLoaded = true; },
+          ()=>{ console.warn('Failed to load font from', path); tryLoad(i+1); }
+        );
+      }catch(e){ console.warn('Error loading font', path, e); tryLoad(i+1); }
+    }
+    tryLoad(0);
+    // try loading mask image from assets
+    try{
+      p.loadImage('assets/WXY-WALTER.png',
+        (img)=>{ maskImage = img; console.log('Mask image loaded from assets/WXY-WALTER.png'); },
+        ()=>{ console.warn('Failed to load mask image at assets/WXY-WALTER.png'); }
+      );
+    }catch(e){ console.warn('Error loading mask image', e); }
+  };
+  let NUM_SEEDS = 20000; const NOISE_SPEED = 0.12;
+  const LLOYD_ITERS = 20;
+  // render scale (1..4) — renders internal layers at W*RENDER_SCALE x H*RENDER_SCALE
+  let RENDER_SCALE = 1;
+
+  // sampling/tuning params (adjustable)
+  let OUTSIDE_WEIGHT = 0.02; // baseline chance to place a seed in non-typography areas
+  let MASK_EXPONENT = 1.8;   // exponent shaping how strongly mask brightness biases sampling
+  let MASK_SCALE = 0.98;     // scale applied to pow(m, exponent) so weight = OUTSIDE_WEIGHT + pow(m,exp)*MASK_SCALE
+  // mouse interaction radius (px) and force
+  let MOUSE_RADIUS = 120;
+  let MOUSE_FORCE = 40;
+  // stroke weight control
+  let STROKE_WEIGHT = 0.5;
+  let strokeSlider = null;
+  // color picker DOM handles
+  let bgPicker = null, linePicker = null;
+  let resolutionSlider = null, seedsSlider = null;
+  let cellSizeSlider = null;
+  // live phrase input
+  let phraseInput = null;
+  // UI to select mask source (text or image)
+  let maskSelect = null;
+  // color controls (default: dark green background, white lines)
+  let BG_COLOR = 'rgb(20,92,0)';
+  let LINE_COLOR = '#ffffff';
+
+  // call this to change background and seam/line colors at runtime
+  function setColors(bg, line){
+    // accept color strings or p5.Color-compatible values
+    BG_COLOR = bg || BG_COLOR;
+    LINE_COLOR = line || LINE_COLOR;
+  // sync pickers if present
+  try{ if (bgPicker) bgPicker.value(BG_COLOR); if (linePicker) linePicker.value(LINE_COLOR); }catch(e){}
+  }
+
+  // control whether the phrase outline is drawn on top of the voronoi
+  // keep it OFF by default so the mask can drive density without rendering text
+  let SHOW_PHRASE = false;
+  function setShowPhrase(v){ SHOW_PHRASE = !!v; }
+
+  // control whether HUD and on-canvas UI should be rendered
+  let RENDER_UI = true;
+  // whether UI and mouse cursor are hidden (toggled by H)
+  let HIDE_UI = false;
+
+  function toggleUI(){
+    HIDE_UI = !HIDE_UI;
+    RENDER_UI = !HIDE_UI;
+    try{
+      if (HIDE_UI){
+        // hide p5 DOM widgets
+        if (strokeSlider) strokeSlider.hide();
+        if (bgPicker) bgPicker.hide();
+        if (linePicker) linePicker.hide();
+        if (resolutionSlider) resolutionSlider.hide();
+        if (seedsSlider) seedsSlider.hide();
+        if (cellSizeSlider) cellSizeSlider.hide();
+  if (phraseInput) phraseInput.hide();
+        // hide cursor
+        p.noCursor();
+      } else {
+        if (strokeSlider) strokeSlider.show();
+        if (bgPicker) bgPicker.show();
+        if (linePicker) linePicker.show();
+        if (resolutionSlider) resolutionSlider.show();
+        if (seedsSlider) seedsSlider.show();
+        if (cellSizeSlider) cellSizeSlider.show();
+  if (phraseInput) phraseInput.show();
+        p.cursor();
+      }
+    }catch(e){ console.warn('toggleUI error', e); }
+  }
+
+  // save current canvas as a PNG with a timestamped filename
+  function savePNG(){
+    if (p._saving) return; // prevent re-entry
+    p._saving = true;
+    const prevUI = RENDER_UI;
+    RENDER_UI = false;
+    // hide DOM widgets if present
+    try{ if (strokeSlider) strokeSlider.hide(); if (bgPicker) bgPicker.hide(); if (linePicker) linePicker.hide(); }catch(e){}
+    // wait a short moment for the next frame to render without UI, then save
+    setTimeout(()=>{
+      try{
+        const name = 'voronoi-' + (new Date()).toISOString().replace(/[:.]/g,'-');
+        p.saveCanvas(name, 'png');
+      }catch(e){ try{ p.saveCanvas('voronoi-text','png'); }catch(_){} }
+      // restore UI
+      RENDER_UI = prevUI;
+      try{ if (strokeSlider) strokeSlider.show(); if (bgPicker) bgPicker.show(); if (linePicker) linePicker.show(); }catch(e){}
+      p._saving = false;
+    }, 80);
+  }
+
+  // helper to read mask brightness at integer pixel coords (0..255)
+  function maskValLocal(x,y){
+  if (!maskLayer) return 0;
+  const xi = Math.max(0, Math.min(Math.floor(x), maskLayer.width-1));
+  const yi = Math.max(0, Math.min(Math.floor(y), maskLayer.height-1));
+  const c = maskLayer.get(xi, yi);
+    return (Array.isArray(c)?c[0]:c) || 0;
+  }
+
+  // normalize apostrophes to typographer's right single quote U+2019
+  function normalizeApost(s){
+    if (!s) return s;
+    return String(s).replace(/['\u2018\u2019]/g, '\u2019');
+  }
+
+  // Lloyd relaxation: move sites to centroids of their Voronoi cells to regularize
+  // the tessellation. Accept centroid only if it's inside the mask (via maskValLocal).
+  function lloydRelax(seedArr, iters){
+    // seedArr: array of {x,y,...}
+    let pts = seedArr.map(s=>[s.x, s.y]);
+    for (let k=0;k<iters;k++){
+  const delaunay = d3.Delaunay.from(pts);
+  const vor = delaunay.voronoi([0,0,maskLayer.width,maskLayer.height]);
+      const newPts = [];
+      for (let i=0;i<pts.length;i++){
+        const poly = vor.cellPolygon(i);
+        if (!poly || poly.length < 3){ newPts.push(pts[i]); continue; }
+        // polygon centroid (signed area)
+        let A = 0, cx = 0, cy = 0;
+        for (let j=0;j<poly.length;j++){
+          const x0 = poly[j][0], y0 = poly[j][1];
+          const x1 = poly[(j+1)%poly.length][0], y1 = poly[(j+1)%poly.length][1];
+          const a = x0*y1 - x1*y0; A += a; cx += (x0 + x1) * a; cy += (y0 + y1) * a;
+        }
+        A *= 0.5;
+        if (Math.abs(A) < 1e-6){ newPts.push(pts[i]); continue; }
+        cx = cx / (6*A); cy = cy / (6*A);
+        const mv = maskValLocal(cx, cy);
+        if (mv >= 128) newPts.push([cx, cy]); else newPts.push(pts[i]);
+      }
+      pts = newPts;
+    }
+    // produce seed objects preserving ox/oy if present
+    const out = [];
+    for (let i=0;i<pts.length;i++){ const s = seedArr[i]; out.push({x: pts[i][0], y: pts[i][1], ox: s.ox || p.random(1000), oy: s.oy || p.random(1000)}); }
+    return out;
+  }
+
+  // recreate graphics layers at the current render scale
+  function createLayers(){
+    const sw = Math.max(1, Math.round(W * RENDER_SCALE));
+    const sh = Math.max(1, Math.round(H * RENDER_SCALE));
+    vorLayer = p.createGraphics(sw, sh);
+    maskLayer = p.createGraphics(sw, sh);
+    try{ maskLayer.canvas.getContext && maskLayer.canvas.getContext('2d', {willReadFrequently: true}); }catch(e){}
+    // apply custom font if loaded
+    try{ if (customFont) { maskLayer.textFont(customFont); p.textFont(customFont); } }catch(e){}
+  }
+
+  p.setup = ()=>{
+    W = window.innerWidth; H = window.innerHeight; p.createCanvas(W,H); p.pixelDensity(1);
+    createLayers();
+  // build mask and seeds (draw mask once after font is applied)
+  // initial mask draw depends on MASK_MODE
+  if (MASK_MODE === 'image' && maskImage) drawMaskImage(); else drawMaskText();
+  rebuildSeeds();
+
+  // create stroke weight slider (DOM) to control seam thickness
+  strokeSlider = p.createSlider(0, 8, STROKE_WEIGHT, 0.1);
+  strokeSlider.style('width', '140px');
+  // position it below HUD
+  strokeSlider.position(12, 12 + 140);
+  // log when stroke weight changes so you can copy defaults
+  strokeSlider.input(()=>{ STROKE_WEIGHT = strokeSlider.value(); console.log('stroke weight ->', STROKE_WEIGHT); });
+
+  // resolution slider (controls internal render scale)
+  resolutionSlider = p.createSlider(1, 4, RENDER_SCALE, 1);
+  resolutionSlider.style('width', '140px');
+  resolutionSlider.position(12, 12 + 220);
+  resolutionSlider.input(()=>{
+    const val = Math.max(1, Math.round(resolutionSlider.value()));
+    if (val !== RENDER_SCALE){ RENDER_SCALE = val; createLayers(); drawMaskText(); rebuildSeeds(); }
+  console.log('render scale ->', RENDER_SCALE);
+  });
+
+  // seeds count slider
+  seedsSlider = p.createSlider(200, 12000, NUM_SEEDS, 50);
+  seedsSlider.style('width', '180px');
+  seedsSlider.position(12 + 160, 12 + 220);
+  seedsSlider.input(()=>{ NUM_SEEDS = Math.max(100, Math.round(seedsSlider.value())); });
+
+  // cell size slider (pixel diameter) — controls target cell size and recomputes NUM_SEEDS
+  cellSizeSlider = p.createSlider(2, 160, 2, 1);
+  cellSizeSlider.style('width', '180px');
+  cellSizeSlider.position(12, 12 + 260);
+  cellSizeSlider.input(()=>{
+    const cell = Math.max(2, Math.round(cellSizeSlider.value()));
+    // approximate number of seeds so average cell ~ cell*cell area
+    const area = Math.max(1, W * H);
+    const approx = Math.max(100, Math.min(20000, Math.round(area / (cell * cell))));
+    NUM_SEEDS = approx;
+    if (seedsSlider) seedsSlider.value(NUM_SEEDS);
+    rebuildSeeds();
+  console.log('cell size ->', cell, 'NUM_SEEDS ->', NUM_SEEDS);
+  });
+
+  // create color pickers (bg and line)
+  bgPicker = p.createColorPicker(BG_COLOR);
+  bgPicker.position(12, 12 + 180);
+  bgPicker.input(()=> setColors(bgPicker.value(), LINE_COLOR));
+  linePicker = p.createColorPicker(LINE_COLOR);
+  linePicker.position(12 + 160, 12 + 180);
+  linePicker.input(()=> setColors(BG_COLOR, linePicker.value()));
+
+  // create live phrase input
+  phraseInput = p.createInput(phrase, 'text');
+  phraseInput.size(520, 26);
+  phraseInput.position(12, 12 + 300);
+  phraseInput.input(()=>{
+    // normalize to typographic apostrophe and uppercase
+    phrase = normalizeApost(phraseInput.value() || '').toUpperCase();
+    maskPhrase = phrase;
+    if (MASK_MODE === 'text') { drawMaskText(); rebuildSeeds(); }
+  });
+
+  // mask source selector
+  maskSelect = p.createSelect();
+  maskSelect.option('Text'); maskSelect.option('Image');
+  maskSelect.selected(MASK_MODE === 'image' ? 'Image' : 'Text');
+  maskSelect.position(12 + 680, 12 + 180);
+  maskSelect.changed(()=>{
+    const val = (maskSelect.value() || 'Text').toLowerCase();
+    MASK_MODE = (val === 'image') ? 'image' : 'text';
+    if (MASK_MODE === 'image'){
+      if (!maskImage){
+        // try to load again
+        p.loadImage('assets/WXY-WALTER.png', (img)=>{ maskImage = img; drawMaskImage(); rebuildSeeds(); }, ()=>{ console.warn('Mask image not available'); });
+      } else { drawMaskImage(); rebuildSeeds(); }
+    } else {
+      drawMaskText(); rebuildSeeds();
+    }
+  });
+  // log initial defaults for easy copy
+  console.log('defaults -> RENDER_SCALE:', RENDER_SCALE, 'NUM_SEEDS:', NUM_SEEDS, 'cellSize:', (cellSizeSlider?cellSizeSlider.value():Math.round(Math.sqrt((W*H)/Math.max(1,NUM_SEEDS)))), 'strokeWeight:', STROKE_WEIGHT);
+  };
+
+  p.windowResized = ()=>{ W=window.innerWidth; H=window.innerHeight; p.resizeCanvas(W,H); vorLayer = p.createGraphics(W,H); maskLayer = p.createGraphics(W,H);
+  // reapply custom font to newly-created graphics if available
+  try{ if (customFont) { maskLayer.textFont(customFont); p.textFont(customFont); } }catch(e){}
+    // ensure maskLayer context is set for readback performance after resize
+    try{ maskLayer.canvas.getContext && maskLayer.canvas.getContext('2d', {willReadFrequently: true}); }catch(e){ }
+  if (MASK_MODE === 'image' && maskImage) drawMaskImage(); else drawMaskText();
+    // resample baseSeeds from mask
+      // ensure maskLayer context is set for readback performance after resize
+      try{ maskLayer.canvas.getContext && maskLayer.canvas.getContext('2d', {willReadFrequently: true}); }catch(e){ }
+  if (MASK_MODE === 'image' && maskImage) drawMaskImage(); else drawMaskText();
+    // resample baseSeeds from mask
+    rebuildSeeds();
+    // reposition slider if present
+    if (strokeSlider) strokeSlider.position(12, 12 + 140);
+  // reposition color pickers
+  if (bgPicker) bgPicker.position(12, 12 + 180);
+  if (linePicker) linePicker.position(12 + 160, 12 + 180);
+  // reposition resolution and seeds sliders
+  if (resolutionSlider) resolutionSlider.position(12, 12 + 220);
+  if (seedsSlider) seedsSlider.position(12 + 160, 12 + 220);
+  if (cellSizeSlider) cellSizeSlider.position(12, 12 + 260);
+  if (phraseInput) phraseInput.position(12, 12 + 300);
+  };
+
+    // populate baseSeeds according to current mask and tuning params, then Lloyd-relax
+    function rebuildSeeds(){
+      baseSeeds = [];
+      let attempts = 0;
+      const maxAttempts = NUM_SEEDS * 40;
+      while(baseSeeds.length < NUM_SEEDS && attempts < maxAttempts){
+        attempts++;
+        const x = Math.random() * W;
+        const y = Math.random() * H;
+        const m = maskValLocal(x,y) / 255.0;
+        const weight = OUTSIDE_WEIGHT + Math.pow(m, MASK_EXPONENT) * MASK_SCALE;
+        if (Math.random() < weight){ baseSeeds.push({x:x, y:y, ox:p.random(1000), oy:p.random(1000)}); }
+      }
+      // regularize
+      baseSeeds = lloydRelax(baseSeeds, LLOYD_ITERS);
+    }
+
+  p.draw = ()=>{
+    // if the font finished loading after setup, apply it once and rebuild mask/seeds
+    if (fontLoaded && !fontApplied) {
+      try{ if (customFont) { maskLayer.textFont(customFont); p.textFont(customFont); } }catch(e){}
+  if (MASK_MODE === 'image' && maskImage) drawMaskImage(); else drawMaskText();
+  rebuildSeeds();
+      fontApplied = true;
+    }
+    t += p.deltaTime/1000;
+    // Only move seeds in response to the mouse. Seeds otherwise remain at their
+    // base positions (from baseSeeds) and smoothly return after the mouse moves away.
+    seeds.length = 0;
+  const mx = (typeof p.mouseX === 'number') ? p.mouseX : -9999;
+  const my = (typeof p.mouseY === 'number') ? p.mouseY : -9999;
+  const R = MOUSE_RADIUS;
+    for (let s of baseSeeds){
+      // ensure displacement fields exist
+      if (s.dx === undefined) s.dx = 0;
+      if (s.dy === undefined) s.dy = 0;
+      // vector from seed base pos to mouse
+      const mdx = s.x - mx, mdy = s.y - my;
+      const md = Math.sqrt(mdx*mdx + mdy*mdy);
+      let targetDx = 0, targetDy = 0;
+      if (md < R) {
+        const force = (R - md) / R * MOUSE_FORCE;
+        const nx = md / (md || 1) ? (mdx / (md || 1)) : 0;
+        const ny = md / (md || 1) ? (mdy / (md || 1)) : 0;
+        targetDx = nx * force;
+        targetDy = ny * force;
+      }
+      // smooth toward target displacement, and relax when target is zero
+      s.dx = p.lerp(s.dx, targetDx, 0.2);
+      s.dy = p.lerp(s.dy, targetDy, 0.2);
+      const sx = s.x + s.dx;
+      const sy = s.y + s.dy;
+      seeds.push({x: sx, y: sy});
+    }
+
+    // build points array for d3-delaunay
+    // map seed positions to high-res layer coordinates
+    const sx = maskLayer.width / W;
+    const sy = maskLayer.height / H;
+    const pts = seeds.map(s=>[s.x * sx, s.y * sy]);
+      const delaunay = d3.Delaunay.from(pts);
+      const vor = delaunay.voronoi([0,0,maskLayer.width,maskLayer.height]);
+
+  // update stroke weight from slider (if present)
+  if (strokeSlider) STROKE_WEIGHT = strokeSlider.value();
+  // draw polygons to vorLayer (high-res): fill with background color, stroke with seam/line color
+  vorLayer.clear(); vorLayer.push(); vorLayer.fill(BG_COLOR); vorLayer.stroke(LINE_COLOR);
+  // scale stroke weight to high-res layer
+  vorLayer.strokeWeight(Math.max(0.3, STROKE_WEIGHT * ((maskLayer.width / W + maskLayer.height / H) * 0.5)));
+    const centroids = [];
+    for (let i=0;i<pts.length;i++){
+  const poly = vor.cellPolygon(i);
+  if (!poly || poly.length < 3) continue;
+  // draw polygon (in high-res layer coords)
+  vorLayer.beginShape();
+  let A = 0, cx = 0, cy = 0;
+  for (let j=0;j<poly.length;j++){ const x0 = poly[j][0], y0 = poly[j][1]; vorLayer.vertex(x0,y0); const x1 = poly[(j+1)%poly.length][0], y1 = poly[(j+1)%poly.length][1]; const a = x0*y1 - x1*y0; A += a; cx += (x0 + x1) * a; cy += (y0 + y1) * a; }
+  vorLayer.endShape(p.CLOSE);
+      A *= 0.5;
+      if (Math.abs(A) > 1e-6){ cx = cx / (6*A); cy = cy / (6*A); centroids.push([cx,cy]); }
+    }
+    // draw small dots at centroids using line color for contrast (scale dot size)
+  vorLayer.noStroke(); vorLayer.fill(LINE_COLOR);
+    for (const c of centroids){
+      // dot size now linked to stroke weight so UI stroke slider controls centroid dots too
+      const layerScale = (maskLayer.width / W + maskLayer.height / H) * 0.5;
+  // halve previous size: use multiplier 3 (was 6)
+  const dotDiameter = Math.max(1, STROKE_WEIGHT * 3 * layerScale);
+      vorLayer.circle(c[0], c[1], dotDiameter);
+    }
+    vorLayer.pop();
+
+  // mask and display using canvas composite (destination-in) for reliability
+  const vorImg = vorLayer.get(); const maskImg = maskLayer.get();
+  p.background(BG_COLOR);
+  // draw voronoi. If a maskPhrase is set, mask the voronoi by that text; otherwise show full-field voronoi
+  if (maskPhrase && maskPhrase.length > 0) {
+    // draw high-res voronoi scaled down to main canvas
+    p.push();
+    p.scale(1,1);
+    p.image(vorImg, 0, 0, W, H);
+    p.pop();
+    // keep only pixels where mask is white
+    p.push();
+    p.drawingContext.globalCompositeOperation = 'destination-in';
+    // draw the mask scaled down to canvas
+    p.image(maskImg, 0, 0, W, H);
+    p.pop();
+    // draw faint outline of letters for clarity (each word on its own centered line)
+    if (RENDER_UI && SHOW_PHRASE && phrase && phrase.length > 0) {
+  p.push();
+  p.drawingContext.globalCompositeOperation = 'lighter';
+  p.noFill(); p.stroke(LINE_COLOR); p.strokeWeight(2);
+      p.textAlign(p.CENTER, p.CENTER);
+      // choose a base outline size (cap by width)
+      const outlineSize = Math.min(220, Math.floor(W*0.2));
+      p.textSize(outlineSize);
+  const words = (phrase||'').toUpperCase().split(/\s+/).filter(Boolean);
+      const lineH = Math.max(24, Math.floor(outlineSize * 0.9));
+      // center the block vertically around H*0.38
+      const baseY = H * 0.38;
+      const mid = (words.length - 1) / 2.0;
+      for (let i = 0; i < words.length; i++){
+        const wy = baseY + (i - mid) * lineH;
+        p.text(words[i], W/2, wy);
+      }
+      p.pop();
+    }
+  } else {
+    // no phrase: just draw the full voronoi field
+    p.image(vorImg, 0, 0);
+  }
+
+  // HUD: show tuning values and key hints (render only when RENDER_UI is true)
+  if (RENDER_UI) {
+    p.push();
+    p.noStroke();
+    p.fill(255, 220);
+    p.textSize(12);
+    p.textAlign(p.LEFT, p.TOP);
+    const hudX = 12, hudY = 12;
+    p.text(`OUTSIDE_WEIGHT: ${OUTSIDE_WEIGHT.toFixed(4)}`, hudX, hudY);
+    p.text(`MASK_EXPONENT: ${MASK_EXPONENT.toFixed(2)}`, hudX, hudY + 16);
+    p.text(`MASK_SCALE: ${MASK_SCALE.toFixed(2)}`, hudX, hudY + 32);
+  p.text(`Seeds: ${baseSeeds.length}  (cell ≈ ${cellSizeSlider ? Math.round(cellSizeSlider.value()) : Math.round(Math.sqrt((W*H)/Math.max(1,NUM_SEEDS))) }px)`, hudX, hudY + 48);
+    p.text(`Mouse radius: ${MOUSE_RADIUS}px (m/M)`, hudX, hudY + 64);
+    p.text(`Mouse force: ${MOUSE_FORCE.toFixed(1)} (f/F)`, hudX, hudY + 80);
+    p.text(`Font: ${fontLoaded ? 'loaded' : 'not loaded'}`, hudX, hudY + 96);
+    const keysY = hudY + 104;
+    p.text(`Keys: [ ] decrease/increase outside weight`, hudX, keysY);
+    p.text(`      , . decrease/increase exponent`, hudX, keysY + 16);
+    p.text(`      m/M decrease/increase mouse radius`, hudX, keysY + 32);
+    p.text(`      f/F decrease/increase mouse force`, hudX, keysY + 48);
+    p.text(`      R rebuild seeds`, hudX, keysY + 64);
+    p.pop();
+  }
+  };
+
+  function drawMaskText(){
+    maskLayer.push();
+    maskLayer.clear();
+    maskLayer.background(20);
+    maskLayer.fill(255);
+    maskLayer.noStroke();
+    maskLayer.textAlign(p.CENTER, p.CENTER);
+  const maxW = W * 0.9;
+  // size the mask text to fit the widest single word; make base size slightly larger
+  let fs1 = Math.floor(Math.min(W*0.28, H*0.36) * 1.06);
+  maskLayer.textSize(fs1);
+  const words = (maskPhrase||'').toUpperCase().split(/\s+/).filter(Boolean);
+  // shrink until the widest word fits
+  let widest = 0;
+  for (const w of words) widest = Math.max(widest, maskLayer.textWidth(w));
+  while(widest > maxW && fs1 > 10){ fs1 -= 2; maskLayer.textSize(fs1); widest = 0; for (const w of words) widest = Math.max(widest, maskLayer.textWidth(w)); }
+  const blockH = fs1 * Math.max(1.0, words.length * 0.9);
+  const y = H*0.5 - (blockH/2) + fs1*0.5;
+  maskLayer.textSize(fs1);
+  // use bold style and draw each word on its own centered line with offsets to thicken
+  maskLayer.textStyle(p.BOLD);
+  const offsets = [[0,0],[1,0],[-1,0],[0,1],[0,-1],[2,0],[-2,0],[0,2],[0,-2]];
+  for (let i=0;i<words.length;i++){
+    const wy = y + i * (fs1 * 0.9);
+    for (const off of offsets){ maskLayer.text(words[i], W/2 + off[0], wy + off[1]); }
+  }
+  // reset textStyle to normal (optional)
+  maskLayer.textStyle(p.NORMAL);
+    maskLayer.pop();
+  }
+
+  // draw the mask from an image (maskImage) into maskLayer
+  function drawMaskImage(){
+    if (!maskLayer) return;
+    maskLayer.push();
+    maskLayer.clear();
+    // black background, white mask
+    maskLayer.background(20);
+    maskLayer.noStroke();
+    if (!maskImage) { maskLayer.pop(); return; }
+    // compute fit: cover behavior, center-crop the image to fill maskLayer
+    const iw = maskImage.width, ih = maskImage.height;
+    const sw = maskLayer.width, sh = maskLayer.height;
+    const scale = Math.max(sw / iw, sh / ih);
+    const dw = iw * scale, dh = ih * scale;
+    const dx = (sw - dw) * 0.5, dy = (sh - dh) * 0.5;
+    // draw image in white alpha mask: draw image, then threshold to white
+    maskLayer.push();
+    maskLayer.imageMode(p.CORNER);
+    maskLayer.tint(255);
+    maskLayer.image(maskImage, dx, dy, dw, dh);
+    maskLayer.pop();
+    maskLayer.pop();
+  }
+
+  p.keyPressed = ()=>{
+    if(p.key === ' ') running = !running;
+  if(p.key==='S' || p.key==='s') p.saveCanvas('voronoi-text','png');
+  if(p.key==='P' || p.key==='p') savePNG();
+  if(p.key==='H' || p.key==='h') toggleUI();
+    if(p.key==='T' || p.key==='t'){
+      const pTop = prompt('Top line:', phrase) ?? phrase;
+      const pMid = prompt('Middle line:', subphrase) ?? subphrase;
+      const pBot = prompt('Bottom line:', year) ?? year;
+      phrase = pTop.trim() || phrase; subphrase = pMid.trim() || subphrase; year = pBot.trim() || year; drawMaskText();
+    }
+    // tuning keys
+  if (p.key === '[') { OUTSIDE_WEIGHT = Math.max(0, OUTSIDE_WEIGHT - 0.005); rebuildSeeds(); }
+  if (p.key === ']') { OUTSIDE_WEIGHT = OUTSIDE_WEIGHT + 0.005; rebuildSeeds(); }
+  if (p.key === ',' || p.key === '<') { MASK_EXPONENT = Math.max(0.1, MASK_EXPONENT - 0.2); rebuildSeeds(); }
+  if (p.key === '.' || p.key === '>') { MASK_EXPONENT = MASK_EXPONENT + 0.2; rebuildSeeds(); }
+  if (p.key === 'm') { MOUSE_RADIUS = Math.max(8, MOUSE_RADIUS - 8); }
+  if (p.key === 'M') { MOUSE_RADIUS = Math.min(2000, MOUSE_RADIUS + 8); }
+  if (p.key === 'f') { MOUSE_FORCE = Math.max(0, MOUSE_FORCE - 2); }
+  if (p.key === 'F') { MOUSE_FORCE = Math.min(2000, MOUSE_FORCE + 2); }
+  if (p.key === 'r' || p.key === 'R') { rebuildSeeds(); }
+  };
+});
+</script>
+</body>
+</html>

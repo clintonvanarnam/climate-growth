@@ -1,0 +1,191 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Animated Arrows — organic flow (p5.js)</title>
+  <script src="https://cdn.jsdelivr.net/npm/p5@1.9.3/lib/p5.min.js"></script>
+  <style>html,body{margin:0;background:#061220;color:#fff}canvas{display:block}</style>
+</head>
+<body>
+<script>
+// Animated arrows driven by a Perlin-noise flow field.
+// Controls let you tune density, noise scale, speed, and arrow size.
+new p5((p)=>{
+  let arrows = [];
+  let cols, rows;
+  let t = 0;
+
+  // params (exposed via sliders)
+  let ARROW_COUNT = 300;
+  let NOISE_SCALE = 0.0025;
+  let FIELD_SPEED = 0.6; // how quickly the flow field evolves
+  let ARROW_SIZE = 12;
+
+  // DOM controls
+  let countSlider, scaleSlider, speedSlider, sizeSlider;
+
+  class Arrow {
+    constructor(x,y){
+      this.pos = p.createVector(x,y);
+      this.vel = p.createVector(p.random(-1,1), p.random(-1,1));
+      this.vel.setMag(1);
+      this.acc = p.createVector(0,0);
+      this.maxSpeed = 2.2;
+      this.maxForce = 0.12;
+      this.color = p.color(255, 240, p.random(160,255));
+      this.size = ARROW_SIZE;
+      this.history = [];
+    }
+    applyForce(f){ this.acc.add(f); }
+    update(){
+      // follow noise flow
+      const angle = flowAngle(this.pos.x, this.pos.y, t);
+      const desired = p.createVector(Math.cos(angle), Math.sin(angle));
+      desired.mult(this.maxSpeed);
+      const steer = p5.Vector.sub(desired, this.vel);
+      steer.limit(this.maxForce);
+      this.applyForce(steer);
+
+      // mouse influence: gentle attraction when pressed, subtle repulsion otherwise
+      if (p.mouseIsPressed){
+        const m = p.createVector(p.mouseX, p.mouseY);
+        const toMouse = p5.Vector.sub(m, this.pos);
+        const d = toMouse.mag();
+        if (d > 0.1){
+          toMouse.normalize();
+          toMouse.mult(mapClamp(80/d, 0, 0.6));
+          this.applyForce(toMouse);
+        }
+      } else {
+        // soft avoidance when mouse is near
+        const md = p.dist(this.pos.x, this.pos.y, p.mouseX, p.mouseY);
+        if (md < 80){
+          const away = p5.Vector.sub(this.pos, p.createVector(p.mouseX, p.mouseY));
+          away.normalize(); away.mult(mapClamp((80-md)/80,0,0.8));
+          this.applyForce(away);
+        }
+      }
+
+      // integrate
+      this.vel.add(this.acc);
+      this.vel.limit(this.maxSpeed);
+      this.pos.add(this.vel);
+      this.acc.mult(0);
+
+      // wrap edges
+      if (this.pos.x < -20) this.pos.x = p.width + 20;
+      if (this.pos.x > p.width + 20) this.pos.x = -20;
+      if (this.pos.y < -20) this.pos.y = p.height + 20;
+      if (this.pos.y > p.height + 20) this.pos.y = -20;
+
+      // keep a short trail for subtle motion cues
+      this.history.push(this.pos.copy());
+      if (this.history.length > 8) this.history.shift();
+    }
+    draw(){
+      p.push();
+      p.translate(this.pos.x, this.pos.y);
+      const heading = this.vel.heading();
+      p.rotate(heading + p.HALF_PI);
+      // subtle glow
+      p.noStroke();
+      p.fill(red(this.color), green(this.color), blue(this.color), 26);
+      p.ellipse(0, 0, this.size*1.6, this.size*1.6);
+
+      // draw arrow as triangle
+      p.fill(this.color);
+      p.stroke(20, 10);
+      p.strokeWeight(0.6);
+      p.beginShape();
+      p.vertex(0, -this.size*0.6);
+      p.vertex(-this.size*0.5, this.size*0.6);
+      p.vertex(this.size*0.5, this.size*0.6);
+      p.endShape(p.CLOSE);
+      p.pop();
+
+      // tiny trail
+      p.noFill();
+      p.stroke(255, 40);
+      p.strokeWeight(1);
+      p.beginShape();
+      for (let v of this.history){ p.vertex(v.x, v.y); }
+      p.endShape();
+    }
+  }
+
+  function red(c){ return p.red(c); }
+  function green(c){ return p.green(c); }
+  function blue(c){ return p.blue(c); }
+
+  function mapClamp(v,a,b){ return Math.max(a, Math.min(b, v)); }
+
+  function flowAngle(x,y, time){
+    // map canvas coords into noise space
+    const nx = x * NOISE_SCALE;
+    const ny = y * NOISE_SCALE;
+    const n = p.noise(nx, ny, time * FIELD_SPEED * 0.1);
+    // amplify into multiple revolutions to create swirling
+    return p.TWO_PI * (n * 2.0);
+  }
+
+  function resetArrows(){
+    arrows = [];
+    for (let i=0;i<ARROW_COUNT;i++){
+      arrows.push(new Arrow(p.random(p.width), p.random(p.height)));
+    }
+  }
+
+  p.setup = ()=>{
+    p.createCanvas(window.innerWidth, window.innerHeight);
+    p.pixelDensity(1);
+    // create controls
+    countSlider = p.createSlider(50, 2000, ARROW_COUNT, 10); countSlider.style('width','220px'); countSlider.position(12,12);
+    scaleSlider = p.createSlider(0.0005, 0.01, NOISE_SCALE, 0.0001); scaleSlider.style('width','220px'); scaleSlider.position(12,42);
+    speedSlider = p.createSlider(0.1, 2.0, FIELD_SPEED, 0.01); speedSlider.style('width','220px'); speedSlider.position(12,72);
+    sizeSlider = p.createSlider(6, 36, ARROW_SIZE, 1); sizeSlider.style('width','220px'); sizeSlider.position(12,102);
+
+    resetArrows();
+    p.background(6,18,32);
+  };
+
+  p.windowResized = ()=>{
+    p.resizeCanvas(window.innerWidth, window.innerHeight);
+    resetArrows();
+    p.background(6,18,32);
+    // reposition controls
+    countSlider.position(12,12);
+    scaleSlider.position(12,42);
+    speedSlider.position(12,72);
+    sizeSlider.position(12,102);
+  };
+
+  p.draw = ()=>{
+    t += p.deltaTime * 0.001;
+    // gentle fade to create trails
+    p.noStroke();
+    p.fill(6,18,32, 28);
+    p.rect(0,0,p.width,p.height);
+
+    // read sliders
+    const newCount = countSlider.value();
+    if (newCount !== ARROW_COUNT){ ARROW_COUNT = newCount; resetArrows(); }
+    NOISE_SCALE = parseFloat(scaleSlider.value());
+    FIELD_SPEED = parseFloat(speedSlider.value());
+    ARROW_SIZE = parseInt(sizeSlider.value());
+
+    // update & draw arrows
+    for (let a of arrows){ a.size = ARROW_SIZE; a.update(); a.draw(); }
+
+    // small HUD
+    p.noStroke(); p.fill(255,200); p.textSize(12);
+    p.textAlign(p.LEFT, p.TOP);
+    p.text(`Arrows: ${ARROW_COUNT}`, 12, p.height - 68);
+    p.text(`Noise scale: ${NOISE_SCALE.toFixed(4)}`, 12, p.height - 52);
+    p.text(`Field speed: ${FIELD_SPEED.toFixed(2)}`, 12, p.height - 36);
+    p.text(`Arrow size: ${ARROW_SIZE}`, 12, p.height - 20);
+  };
+});
+</script>
+</body>
+</html>

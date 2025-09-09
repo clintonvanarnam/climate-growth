@@ -1,0 +1,957 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Voronoi Text BW</title>
+  <style>html,body{height:100%;margin:0;background:#840000;color:#fff}canvas{width:100%;height:100%;display:block}#ui{position:fixed;left:12px;top:12px;font-family:system-ui, sans-serif}</style>
+</head>
+<body>
+  <div id="ui">Text: <input id="textInput" value="NYC Climate Week"> Size: <input id="size" type="range" min="32" max="300" value="120"> <button id="regen">Regenerate</button> <button id="save">Save</button></div>
+  <canvas id="gl"></canvas>
+  <script>
+  const canvas = document.getElementById('gl');
+  const gl = canvas.getContext('webgl');
+  if(!gl){ document.body.textContent='WebGL not supported'; throw 0; }
+  function resize(){ const dpr = devicePixelRatio||1; canvas.width = Math.floor(innerWidth*dpr); canvas.height = Math.floor(innerHeight*dpr); canvas.style.width = innerWidth+'px'; canvas.style.height = innerHeight+'px'; gl.viewport(0,0,canvas.width,canvas.height); }
+  window.addEventListener('resize', resize); resize();
+
+  function compile(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+  function link(vs, fs){ const p = gl.createProgram(); gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p); if(!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); return p; }
+
+  const quadVS = 'attribute vec2 a; varying vec2 v; void main(){ v=0.5*(a+1.0); gl_Position=vec4(a,0,1); }';
+  const quadFS = '\nprecision mediump float; varying vec2 v; uniform sampler2D u_text; uniform vec2 u_mouse; uniform float u_scale;\nfloat hash21(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }\nvec2 jitter(vec2 cell){ return vec2(hash21(cell+0.12)-0.5, hash21(cell+0.73)-0.5); }\nfloat vor(vec2 uv, float scale){ vec2 p=uv*scale; vec2 ip=floor(p); vec2 fp=fract(p); float best=1e9; for(int y=-1;y<=1;y++) for(int x=-1;x<=1;x++){ vec2 c=ip+vec2(x,y); vec2 j=jitter(c); vec2 pos = vec2(x,y)+j+fp; best=min(best,length(pos)); } return best; }\nvoid main(){ vec2 uv=v; float m = texture2D(u_text,uv).r; if(m<0.02){ gl_FragColor = vec4(0.0); return; } float e=0.0; float s=1.0; for(int i=0;i<5;i++){ e += (1.0 - smoothstep(0.0,0.6, vor(uv,s) ))/s; s *= 1.9; } e = clamp(e,0.0,1.0); e *= smoothstep(0.02,1.0,m); float bw = smoothstep(0.18,0.26,e); gl_FragColor = vec4(vec3(bw),1.0);}\n';
+
+  const vs = compile(gl.VERTEX_SHADER, quadVS);
+  const fs = compile(gl.FRAGMENT_SHADER, quadFS);
+  const prog = link(vs, fs);
+  gl.useProgram(prog);
+
+  const buf = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, buf); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
+  const a = gl.getAttribLocation(prog, 'a'); gl.enableVertexAttribArray(a); gl.vertexAttribPointer(a,2,gl.FLOAT,false,0,0);
+  const u_text = gl.getUniformLocation(prog,'u_text');
+
+  function makeText(w,h,text,size){ const c=document.createElement('canvas'); c.width=w; c.height=h; const ctx=c.getContext('2d'); ctx.fillStyle='black'; ctx.fillRect(0,0,w,h); ctx.fillStyle='white'; ctx.textAlign='center'; ctx.textBaseline='middle'; ctx.font = 'bold '+size+'px sans-serif'; const lines = text.split(/\s+/); const startY = h/2 - ((lines.length-1)*size*0.92)/2; for(let i=0;i<lines.length;i++) ctx.fillText(lines[i], w/2, startY + i*size*0.92); return c; }
+  function makeTex(img){ const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,t); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true); gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,img); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false); return t; }
+
+  const textInput = document.getElementById('textInput'); const sizeInput = document.getElementById('size'); const regen = document.getElementById('regen'); const save = document.getElementById('save');
+  let textCanvas = makeText(canvas.width, canvas.height, textInput.value, parseInt(sizeInput.value)); let tex = makeTex(textCanvas);
+  function updateTex(){ gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, tex); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true); gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,textCanvas); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false); gl.uniform1i(u_text, 0); }
+  updateTex();
+
+  let mx=canvas.width/2, my=canvas.height/2; window.addEventListener('mousemove', (e)=>{ const r=canvas.getBoundingClientRect(); mx=(e.clientX-r.left)*(devicePixelRatio||1); my=(r.bottom-e.clientY)*(devicePixelRatio||1); });
+
+  regen.addEventListener('click', ()=>{ textCanvas = makeText(canvas.width, canvas.height, textInput.value, parseInt(sizeInput.value)); tex = makeTex(textCanvas); updateTex(); });
+  save.addEventListener('click', ()=>{ const w=canvas.width,h=canvas.height; const pixels=new Uint8Array(w*h*4); gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,pixels); const out=document.createElement('canvas'); out.width=w; out.height=h; const ctx=out.getContext('2d'); const id=ctx.createImageData(w,h); for(let y=0;y<h;y++){ const src=(h-1-y)*w*4, dst=y*w*4; for(let i=0;i<w*4;i++) id.data[dst+i]=pixels[src+i]; } ctx.putImageData(id,0,0); out.toBlob(b=>{ const url=URL.createObjectURL(b); const a=document.createElement('a'); a.href=url; a.download='voronoi.png'; a.click(); URL.revokeObjectURL(url); }); });
+
+  const u_mouse = gl.getUniformLocation(prog, 'u_mouse');
+  const u_scale = gl.getUniformLocation(prog, 'u_scale');
+
+  function frame(){ gl.useProgram(prog); gl.uniform2f(u_mouse, mx, my); gl.uniform1f(u_scale, 28.0 + (parseFloat(sizeInput.value)||120.0)*0.08); updateTex(); gl.drawArrays(gl.TRIANGLE_STRIP,0,4); requestAnimationFrame(frame); }
+  frame();
+  </script>
+</body>
+</html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Voronoi Text — Black & White</title>
+  <style>
+    html,body { height:100%; margin:0; background:#b30000; color:#fff; font-family:system-ui, sans-serif }
+    canvas { display:block; width:100%; height:100%; }
+    #ui { position:fixed; left:12px; top:12px; z-index:10; font-size:13px }
+    #ui input { width:220px }
+    #ui button { margin-left:6px }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div style="font-weight:600; margin-bottom:8px">Voronoi Text — Black & White</div>
+    <div>Move the mouse to perturb the Voronoi cells.</div>
+    <div style="margin-top:8px">Text: <input id="textInput" value="NYC Climate Week"/></div>
+    <div style="margin-top:6px">Size: <input id="size" type="range" min="32" max="300" value="120"/></div>
+    <div style="margin-top:8px"><button id="regen">Regenerate Text</button> <button id="save">Save PNG</button></div>
+  </div>
+  <canvas id="gl"></canvas>
+  <script>
+    const canvas = document.getElementById('gl');
+    const gl = canvas.getContext('webgl');
+    if(!gl){ document.body.innerHTML = '<p style="color:white">WebGL not supported</p>'; throw new Error('WebGL not supported'); }
+
+    function resize(){ const dpr = devicePixelRatio||1; const w = Math.floor(innerWidth*dpr); const h = Math.floor(innerHeight*dpr); canvas.width=w; canvas.height=h; canvas.style.width=innerWidth+'px'; canvas.style.height=innerHeight+'px'; gl.viewport(0,0,w,h); }
+    window.addEventListener('resize', resize); resize();
+
+    function compile(type, src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s); if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+    function link(vs,fs){ const p=gl.createProgram(); gl.attachShader(p,vs); gl.attachShader(p,fs); gl.linkProgram(p); if(!gl.getProgramParameter(p,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); return p; }
+
+    const quadVS = 'attribute vec2 aPos; varying vec2 vUv; void main(){ vUv = 0.5*(aPos+1.0); gl_Position = vec4(aPos,0,1); }';
+
+    const frag = [
+      'precision mediump float;',
+      'varying vec2 vUv;',
+      'uniform vec2 u_resolution;',
+      'uniform float u_time;',
+      'uniform sampler2D u_text;',
+      'uniform vec2 u_mouse;',
+      'uniform float u_scale;',
+      '',
+      '// simple hash',
+      'float hash21(vec2 p){ p = fract(p*vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }',
+      '',
+      '// jittered seed position',
+      'vec2 seedPos(vec2 cell){ float jx = hash21(cell + 0.123); float jy = hash21(cell + 0.456); return vec2(jx-0.5, jy-0.5); }',
+      '',
+      '// voronoi distance from uv to nearest jittered seed; also returns seed coords via out param',
+      'float voronoi(vec2 uv, out vec2 seedCoord){',
+      '  vec2 p = uv * u_scale;',
+      '  vec2 ip = floor(p);',
+      '  vec2 fp = fract(p);',
+      '  float best = 1e9; vec2 bestCell = vec2(0.0);',
+      '  for(int j=-1;j<=1;j++){',
+      '    for(int i=-1;i<=1;i++){',
+      '      vec2 rc = vec2(float(i),float(j));',
+      '      vec2 cell = ip + rc;',
+      '      vec2 jitter = seedPos(cell);',
+      '      vec2 m = u_mouse / u_resolution;',
+      '      vec2 cellUv = (cell + jitter) / u_scale;',
+      '      vec2 md = cellUv - m;',
+      '      float mdist = length(md);',
+      '      jitter += normalize(md + 1e-4) * (0.18 / (0.4 + mdist));',
+      '      vec2 pos = rc + jitter + fp;',
+      '      float d = length(pos);',
+      '      if(d < best){ best = d; bestCell = cell; }',
+      '    }',
+      '  }',
+      '  seedCoord = bestCell;',
+      '  return best;',
+      '}',
+      '',
+      'float layeredVoronoi(vec2 uv){',
+      '  float acc = 0.0;',
+      '  float sc = 1.0;',
+      '  for(int i=0;i<6;i++){',
+      '    vec2 scp; float v = voronoi(uv * sc, scp);',
+      '    float contrib = 1.0 - smoothstep(0.0, 0.6, v);',
+      '    acc += contrib / sc;',
+      '    sc *= 1.9;',
+      '  }',
+      '  return clamp(acc, 0.0, 1.0);',
+      '}',
+      '',
+      'void main(){',
+      '  vec2 uv = vUv;',
+      '  float mask = texture2D(u_text, uv).r;',
+      '  if(mask < 0.02){ gl_FragColor = vec4(0.0,0.0,0.0,1.0); return; }',
+      '  float e = layeredVoronoi(uv);',
+      '  float energy = e * smoothstep(0.02, 1.0, mask);',
+      '  vec2 m = u_mouse / u_resolution;',
+      '  float md = distance(uv, m);',
+      '  energy *= 1.0 + 0.9 * exp(-md*6.0);',
+      '  float bw = smoothstep(0.18, 0.26, energy);',
+      '  gl_FragColor = vec4(vec3(bw), 1.0);',
+      '}',
+    ''].join('\n');
+
+    const vs = compile(gl.VERTEX_SHADER, quadVS);
+    const fs = compile(gl.FRAGMENT_SHADER, frag);
+    const prog = link(vs, fs);
+    gl.useProgram(prog);
+
+    // attributes
+    const aPos = gl.getAttribLocation(prog,'aPos');
+    const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,quad); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+
+    // uniforms
+    const u_resolution = gl.getUniformLocation(prog,'u_resolution');
+    const u_time = gl.getUniformLocation(prog,'u_time');
+    const u_text = gl.getUniformLocation(prog,'u_text');
+    const u_mouse = gl.getUniformLocation(prog,'u_mouse');
+    const u_scale = gl.getUniformLocation(prog,'u_scale');
+
+    function makeTextMask(w,h,text,size){
+      const c = document.createElement('canvas'); c.width=w; c.height=h; const ctx = c.getContext('2d');
+      ctx.fillStyle='black'; ctx.fillRect(0,0,w,h); ctx.fillStyle='white'; ctx.textAlign='center'; ctx.textBaseline='middle';
+      ctx.font = 'bold ' + size + 'px sans-serif';
+      const words = (text||'').trim().split(/\s+/);
+      const startY = h*0.5 - ((words.length-1) * size * 0.92) * 0.5;
+      for(let i=0;i<words.length;i++) ctx.fillText(words[i], w/2, startY + i*size*0.92);
+      return c;
+    }
+
+    function makeTexture(img){ const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,t); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true); gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,img); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false); return t; }
+
+    const textInput = document.getElementById('textInput');
+    const sizeInput = document.getElementById('size');
+    const regenBtn = document.getElementById('regen');
+    const saveBtn = document.getElementById('save');
+
+    let textCanvas = makeTextMask(canvas.width, canvas.height, textInput.value, parseInt(sizeInput.value));
+    let texText = makeTexture(textCanvas);
+
+    function updateTextTexture(){ gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texText); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true); gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,textCanvas); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false); gl.uniform1i(u_text,0); }
+
+    let mx=canvas.width*0.5, my=canvas.height*0.5;
+    window.addEventListener('mousemove',(e)=>{ const r=canvas.getBoundingClientRect(); mx=(e.clientX-r.left)*(devicePixelRatio||1); my=(r.bottom-e.clientY)*(devicePixelRatio||1); });
+
+    regenBtn.addEventListener('click',()=>{ textCanvas = makeTextMask(canvas.width, canvas.height, textInput.value, parseInt(sizeInput.value)); texText = makeTexture(textCanvas); updateTextTexture(); });
+
+    saveBtn.addEventListener('click',()=>{ const w=canvas.width,h=canvas.height; const pixels=new Uint8Array(w*h*4); gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,pixels); const out=document.createElement('canvas'); out.width=w; out.height=h; const ctx=out.getContext('2d'); const img=ctx.createImageData(w,h); for(let y=0;y<h;y++){ const src=(h-1-y)*w*4, dst=y*w*4; for(let i=0;i<w*4;i++) img.data[dst+i]=pixels[src+i]; } ctx.putImageData(img,0,0); out.toBlob((b)=>{ const url=URL.createObjectURL(b); const a=document.createElement('a'); a.href=url; a.download='voronoi-text.png'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }); });
+
+    updateTextTexture();
+
+    const start = performance.now();
+    function render(){ const t=(performance.now()-start)/1000.0; gl.useProgram(prog); gl.uniform2f(u_resolution, canvas.width, canvas.height); gl.uniform1f(u_time, t); gl.uniform2f(u_mouse, mx, my); gl.uniform1f(u_scale, 28.0 + (parseFloat(sizeInput.value)||120.0)*0.08); updateTextTexture(); gl.drawArrays(gl.TRIANGLE_STRIP,0,4); requestAnimationFrame(render); }
+    render();
+  </script>
+</body>
+</html>
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Voronoi Text — Black & White</title>
+  <style>
+    html,body { height:100%; margin:0; background:#88d600; color:#690000; font-family:system-ui, sans-serif }
+    canvas { display:block; width:100%; height:100%; }
+  #ui { position:fixed; left:12px; top:12px; z-index:10; font-size:13px }
+  #ui input { width:220px }
+  #ui button { margin-left:6px }
+  </style>
+  </head>
+  <body>
+  <div id="ui">
+    <div style="font-weight:600; margin-bottom:8px">Voronoi Text — Black & White</div>
+    <div>Move the mouse to perturb the Voronoi cells.</div>
+  <div style="margin-top:8px">Text: <input id="textInput" value="NYC Climate Week"/></div>
+  <div style="margin-top:6px">Size: <input id="size" type="range" min="32" max="300" value="120"/></div>
+  <div style="margin-top:8px"><button id="regen">Regenerate Text</button> <button id="save">Save PNG</button></div>
+  </div>
+  <canvas id="gl"></canvas>
+  <script>
+  // Voronoi-fractal black & white text visualization
+  const canvas = document.getElementById('gl');
+  const gl = canvas.getContext('webgl');
+  if(!gl){ document.body.innerHTML = '<p style="color:white">WebGL not supported</p>'; throw new Error('WebGL not supported'); }
+
+  function resize(){ const dpr = devicePixelRatio||1; const w = Math.floor(innerWidth*dpr); const h = Math.floor(innerHeight*dpr); canvas.width=w; canvas.height=h; canvas.style.width=innerWidth+'px'; canvas.style.height=innerHeight+'px'; gl.viewport(0,0,w,h); }
+  window.addEventListener('resize', resize); resize();
+
+  function compile(type, src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s); if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+  function link(vs,fs){ const p=gl.createProgram(); gl.attachShader(p,vs); gl.attachShader(p,fs); gl.linkProgram(p); if(!gl.getProgramParameter(p,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); return p; }
+
+  const quadVS = 'attribute vec2 aPos; varying vec2 vUv; void main(){ vUv = 0.5*(aPos+1.0); gl_Position = vec4(aPos,0,1); }';
+
+  // Fragment shader: Voronoi + multi-scale layering driven by text mask. Outputs pure B/W.
+  const frag = `precision mediump float;
+  <!doctype html>
+  <html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>Voronoi Text — Black & White</title>
+    <style>
+      html,body { height:100%; margin:0; background:#000; color:#fff; font-family:system-ui, sans-serif }
+      canvas { display:block; width:100%; height:100%; }
+      #ui { position:fixed; left:12px; top:12px; z-index:10; font-size:13px }
+      #ui input { width:220px }
+      #ui button { margin-left:6px }
+    </style>
+  </head>
+  <body>
+    <div id="ui">
+      <div style="font-weight:600; margin-bottom:8px">Voronoi Text — Black & White</div>
+      <div>Move the mouse to perturb the Voronoi cells.</div>
+      <div style="margin-top:8px">Text: <input id="textInput" value="NYC Climate Week"/></div>
+      <div style="margin-top:6px">Size: <input id="size" type="range" min="32" max="300" value="120"/></div>
+      <div style="margin-top:8px"><button id="regen">Regenerate Text</button> <button id="save">Save PNG</button></div>
+    </div>
+    <canvas id="gl"></canvas>
+    <script>
+      // Voronoi-fractal black & white text visualization
+      const canvas = document.getElementById('gl');
+      const gl = canvas.getContext('webgl');
+      if(!gl){ document.body.innerHTML = '<p style="color:white">WebGL not supported</p>'; throw new Error('WebGL not supported'); }
+
+      function resize(){ const dpr = devicePixelRatio||1; const w = Math.floor(innerWidth*dpr); const h = Math.floor(innerHeight*dpr); canvas.width=w; canvas.height=h; canvas.style.width=innerWidth+'px'; canvas.style.height=innerHeight+'px'; gl.viewport(0,0,w,h); }
+      window.addEventListener('resize', resize); resize();
+
+      function compile(type, src){ const s=gl.createShader(type); gl.shaderSource(s,src); gl.compileShader(s); if(!gl.getShaderParameter(s,gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s)); return s; }
+      function link(vs,fs){ const p=gl.createProgram(); gl.attachShader(p,vs); gl.attachShader(p,fs); gl.linkProgram(p); if(!gl.getProgramParameter(p,gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p)); return p; }
+
+      const quadVS = 'attribute vec2 aPos; varying vec2 vUv; void main(){ vUv = 0.5*(aPos+1.0); gl_Position = vec4(aPos,0,1); }';
+
+      // Fragment shader: Voronoi + multi-scale layering driven by text mask. Outputs pure B/W.
+      const frag = `precision mediump float;
+      varying vec2 vUv;
+      uniform vec2 u_resolution;
+      uniform float u_time;
+      uniform sampler2D u_text; // text mask
+      uniform vec2 u_mouse; // in pixels
+      uniform float u_scale;
+
+      // simple hash
+      float hash21(vec2 p){ p = fract(p*vec2(123.34,456.21)); p += dot(p,p+45.32); return fract(p.x*p.y); }
+
+      // jittered seed position
+      vec2 seedPos(vec2 cell){ float jx = hash21(cell + 0.123); float jy = hash21(cell + 0.456); return vec2(jx-0.5, jy-0.5); }
+
+      // voronoi distance from uv to nearest jittered seed; also returns seed coords via out param
+      float voronoi(vec2 uv, out vec2 seedCoord){
+        vec2 p = uv * u_scale;
+        vec2 ip = floor(p);
+        vec2 fp = fract(p);
+        float best = 1e9; vec2 bestCell = vec2(0.0);
+        for(int j=-1;j<=1;j++){
+          for(int i=-1;i<=1;i++){
+            vec2 rc = vec2(float(i),float(j));
+            vec2 cell = ip + rc;
+            vec2 jitter = seedPos(cell);
+            // mouse influence: push seeds away from mouse position (in uv space)
+            vec2 m = u_mouse / u_resolution;
+            vec2 cellUv = (cell + jitter) / u_scale;
+            vec2 md = cellUv - m;
+            float mdist = length(md);
+            jitter += normalize(md + 1e-4) * (0.18 / (0.4 + mdist));
+            vec2 pos = rc + jitter + fp;
+            float d = length(pos);
+            if(d < best){ best = d; bestCell = cell; }
+          }
+        }
+        seedCoord = bestCell;
+        return best;
+      }
+
+      float layeredVoronoi(vec2 uv){
+        float acc = 0.0;
+        float sc = 1.0;
+        for(int i=0;i<6;i++){
+          vec2 scp; float v = voronoi(uv * sc, scp);
+          // sharper contribution
+          float contrib = 1.0 - smoothstep(0.0, 0.6, v);
+          acc += contrib / sc;
+          sc *= 1.9;
+        }
+        return clamp(acc, 0.0, 1.0);
+      }
+
+      void main(){
+        vec2 uv = vUv;
+        float mask = texture2D(u_text, uv).r;
+        // if outside text, quickly fade to black
+        if(mask < 0.02){ gl_FragColor = vec4(0.0,0.0,0.0,1.0); return; }
+
+        // compute layered voronoi energy
+        float e = layeredVoronoi(uv);
+        // bias with mask so growth originates on letters
+        float energy = e * smoothstep(0.02, 1.0, mask);
+        // boost near mouse for strong interaction
+        vec2 m = u_mouse / u_resolution;
+        float md = distance(uv, m);
+        energy *= 1.0 + 0.9 * exp(-md*6.0);
+
+        // threshold to produce crisp black/white growth; tune softness
+        float bw = smoothstep(0.18, 0.26, energy);
+        gl_FragColor = vec4(vec3(bw), 1.0);
+      }
+      `;
+
+      const vs = compile(gl.VERTEX_SHADER, quadVS);
+      const fs = compile(gl.FRAGMENT_SHADER, frag);
+      const prog = link(vs, fs);
+      gl.useProgram(prog);
+
+      // attributes
+      const aPos = gl.getAttribLocation(prog,'aPos');
+      const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,quad); gl.bufferData(gl.ARRAY_BUFFER,new Float32Array([-1,-1,1,-1,-1,1,1,1]), gl.STATIC_DRAW);
+      gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos,2,gl.FLOAT,false,0,0);
+
+      // uniforms
+      const u_resolution = gl.getUniformLocation(prog,'u_resolution');
+      const u_time = gl.getUniformLocation(prog,'u_time');
+      const u_text = gl.getUniformLocation(prog,'u_text');
+      const u_mouse = gl.getUniformLocation(prog,'u_mouse');
+      const u_scale = gl.getUniformLocation(prog,'u_scale');
+
+      // create text mask canvas and texture
+      function makeTextMask(w,h,text,size){
+        const c = document.createElement('canvas'); c.width=w; c.height=h; const ctx = c.getContext('2d');
+        ctx.fillStyle='black'; ctx.fillRect(0,0,w,h); ctx.fillStyle='white'; ctx.textAlign='center'; ctx.textBaseline='middle';
+        ctx.font = 'bold ' + size + 'px sans-serif';
+        const words = (text||'').trim().split(/\s+/);
+        const startY = h*0.5 - ((words.length-1) * size * 0.92) * 0.5;
+        for(let i=0;i<words.length;i++) ctx.fillText(words[i], w/2, startY + i*size*0.92);
+        return c;
+      }
+
+      function makeTexture(img){ const t=gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D,t); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true); gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,img); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false); return t; }
+
+      const textInput = document.getElementById('textInput');
+      const sizeInput = document.getElementById('size');
+      const regenBtn = document.getElementById('regen');
+      const saveBtn = document.getElementById('save');
+
+      let textCanvas = makeTextMask(canvas.width, canvas.height, textInput.value, parseInt(sizeInput.value));
+      let texText = makeTexture(textCanvas);
+
+      function updateTextTexture(){ gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, texText); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,true); gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,textCanvas); gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false); gl.uniform1i(u_text,0); }
+
+      let mx=canvas.width*0.5, my=canvas.height*0.5;
+      window.addEventListener('mousemove',(e)=>{ const r=canvas.getBoundingClientRect(); mx=(e.clientX-r.left)*(devicePixelRatio||1); my=(r.bottom-e.clientY)*(devicePixelRatio||1); });
+
+      regenBtn.addEventListener('click',()=>{ textCanvas = makeTextMask(canvas.width, canvas.height, textInput.value, parseInt(sizeInput.value)); texText = makeTexture(textCanvas); updateTextTexture(); });
+
+      saveBtn.addEventListener('click',()=>{ const w=canvas.width,h=canvas.height; const pixels=new Uint8Array(w*h*4); gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,pixels); const out=document.createElement('canvas'); out.width=w; out.height=h; const ctx=out.getContext('2d'); const img=ctx.createImageData(w,h); for(let y=0;y<h;y++){ const src=(h-1-y)*w*4, dst=y*w*4; for(let i=0;i<w*4;i++) img.data[dst+i]=pixels[src+i]; } ctx.putImageData(img,0,0); out.toBlob((b)=>{ const url=URL.createObjectURL(b); const a=document.createElement('a'); a.href=url; a.download='voronoi-text.png'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); }); });
+
+      updateTextTexture();
+
+      const start = performance.now();
+      function render(){ const t=(performance.now()-start)/1000.0; gl.useProgram(prog); gl.uniform2f(u_resolution, canvas.width, canvas.height); gl.uniform1f(u_time, t); gl.uniform2f(u_mouse, mx, my); gl.uniform1f(u_scale, 28.0 + (parseFloat(sizeInput.value)||120.0)*0.08); updateTextTexture(); gl.drawArrays(gl.TRIANGLE_STRIP,0,4); requestAnimationFrame(render); }
+      render();
+    </script>
+  </body>
+  </html>
+  </body>
+  </html>
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>NYC Climate Week 2025 — WebGL</title>
+  <style>
+    html,body { height:100%; margin:0; background:#080C0A; }
+    canvas { display:block; width:100%; height:100%; }
+    #ui { position:fixed; left:10px; top:10px; z-index:10; color:#fff; font-family:sans-serif; font-size:13px }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <div style="margin-bottom:6px;">NYC Climate Week 2025 — WebGL</div>
+    <div>
+      <label>Main text: <input id="mainText" value="NYC Climate Week" style="width:200px"/></label>
+    </div>
+    <div>
+      <label>Sub text: <input id="subText" value="2025" style="width:80px"/></label>
+    </div>
+    <div>
+      <label>Speed: <input id="speed" type="range" min="0" max="3" step="0.01" value="0.8"></label>
+    </div>
+    <div>
+      <label>Strength: <input id="strength" type="range" min="0" max="3" step="0.01" value="1.2"></label>
+    </div>
+    <div>
+      <label>Prominence: <input id="prominence" type="range" min="0" max="3" step="0.01" value="2.4"></label>
+    </div>
+    <div>
+      <label>Glow: <input id="glow" type="range" min="0" max="3" step="0.01" value="1.0"></label>
+    </div>
+    <div>
+      <label>Decay: <input id="decay" type="range" min="0.8" max="1" step="0.001" value="0.975"></label>
+    </div>
+    <div>
+      <label>Flow Strength: <input id="flowStrength" type="range" min="0" max="3" step="0.01" value="0.5"></label>
+    </div>
+    <div>
+      <label>Palette: <select id="palette"><option value="0">Warm</option><option value="1">Cool</option><option value="2">Pastel</option></select></label>
+    </div>
+    <div>
+      <label><input id="emitFractal" type="checkbox"> Emit fractal copies</label>
+    </div>
+    <div>
+      <label>Fractal iterations: <input id="fractIter" type="range" min="1" max="8" step="1" value="4"></label>
+    </div>
+    <div>
+      <label>Fractal scale: <input id="fractScale" type="range" min="0.7" max="1.6" step="0.01" value="1.12"></label>
+    </div>
+    <div>
+      <label><input id="useCentroid" type="checkbox"> Use text centroid as center</label>
+    </div>
+    <div>
+      <label>Center X: <input id="centerX" type="range" min="0" max="1" step="0.001" value="0.5"></label>
+    </div>
+    <div>
+      <label>Center Y: <input id="centerY" type="range" min="0" max="1" step="0.001" value="0.5"></label>
+    </div>
+    <div>
+      <label>Rotate per iter: <input id="rotateIter" type="range" min="-1.57" max="1.57" step="0.01" value="0.2"></label>
+    </div>
+    <div>
+      <label>Text dominance: <input id="textDominance" type="range" min="0" max="3" step="0.01" value="2.0"></label>
+    </div>
+    <div>
+      <label>Fractal strength: <input id="fractStrength" type="range" min="0" max="4" step="0.05" value="1.4"></label>
+    </div>
+    <div>
+      <label><input id="twoTone" type="checkbox"> Two-tone (black / white)</label>
+    </div>
+    <div>
+      <label>B/W threshold: <input id="bwThreshold" type="range" min="0" max="1" step="0.01" value="0.12"></label>
+    </div>
+    <div style="margin-top:6px; border-top:1px solid rgba(201, 0, 0, 0.06); padding-top:6px">
+      <div><label><input id="choker" type="checkbox"> Choker highlight (sweeping ring)</label></div>
+      <div><label>Choker speed: <input id="chokerSpeed" type="range" min="-6.28" max="6.28" step="0.01" value="1.8"></label></div>
+      <div><label>Choker width: <input id="chokerWidth" type="range" min="0.02" max="1.0" step="0.01" value="0.18"></label></div>
+      <div><label>Choker intensity: <input id="chokerIntensity" type="range" min="0" max="4" step="0.05" value="2.2"></label></div>
+    </div>
+    <div style="margin-top:6px">
+      <button id="dramBtn">Dramatic Fractal Preset</button>
+    </div>
+    <div style="margin-top:6px">
+      <button id="resetBtn">Reset Growth</button>
+      <button id="regenBtn">Apply Text</button>
+  <button id="saveBtn">Save PNG</button>
+    </div>
+  </div>
+  <canvas id="gl"></canvas>
+  <script>
+    // Pure WebGL implementation
+    const canvas = document.getElementById('gl');
+    const gl = canvas.getContext('webgl');
+    if (!gl) {
+      document.body.innerHTML = '<p style="color:white">WebGL not supported</p>';
+      throw new Error('WebGL not supported');
+    }
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1;
+      const w = Math.floor(innerWidth * dpr);
+      const h = Math.floor(innerHeight * dpr);
+      canvas.width = w; canvas.height = h;
+      canvas.style.width = innerWidth + 'px'; canvas.style.height = innerHeight + 'px';
+      gl.viewport(0,0,w,h);
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    // Utility: compile shader
+    function compile(type, src){ const s = gl.createShader(type); gl.shaderSource(s, src); gl.compileShader(s); if(!gl.getShaderParameter(s, gl.COMPILE_STATUS)){ throw new Error(gl.getShaderInfoLog(s)); } return s; }
+    function link(vs, fs){ const p = gl.createProgram(); gl.attachShader(p, vs); gl.attachShader(p, fs); gl.linkProgram(p); if(!gl.getProgramParameter(p, gl.LINK_STATUS)){ throw new Error(gl.getProgramInfoLog(p)); } return p; }
+
+    // Fullscreen quad
+    const quadVS = `attribute vec2 aPos; varying vec2 vUv; void main(){ vUv = 0.5*(aPos+1.0); gl_Position = vec4(aPos,0,1); }`;
+
+  const frag = `precision mediump float; varying vec2 vUv; uniform sampler2D u_text; uniform sampler2D u_boost; uniform sampler2D u_prev; uniform float u_time; uniform vec2 u_resolution; uniform float u_speed; uniform float u_gain; uniform float u_decay; uniform float u_prominence; uniform float u_glow; uniform float u_flowStrength; uniform float u_palette; uniform float u_emitFractal; uniform float u_fractIter; uniform float u_fractScale; uniform float u_centerX; uniform float u_centerY; uniform float u_rotateIter; uniform float u_textDominance; uniform float u_fractStrength; uniform float u_twoTone; uniform float u_bwThreshold; uniform float u_choker; uniform float u_chokerSpeed; uniform float u_chokerWidth; uniform float u_chokerIntensity;
+
+    // hash / noise / fbm
+    float hash(vec2 p){ return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453); }
+    float noise(vec2 p){ vec2 i=floor(p); vec2 f=fract(p); vec2 u=f*f*(3.0-2.0*f); return mix(mix(hash(i+vec2(0,0)),hash(i+vec2(1,0)),u.x), mix(hash(i+vec2(0,1)),hash(i+vec2(1,1)),u.x), u.y); }
+    float fbm(vec2 p){ float v=0.0; float a=0.55; for(int i=0;i<6;i++){ v += a*noise(p); p*=2.0; a*=0.5; } return v; }
+
+    // soft organic palette
+    // palette that can be shifted between presets using u_palette (0..2)
+    vec3 palette(float t){
+      // base palettes
+      vec3 a0 = vec3(0.9,0.6,0.3);
+      vec3 a1 = vec3(0.2,0.5,0.9);
+      vec3 a2 = vec3(0.8,0.7,0.9);
+      // pick by blending
+      float p = clamp(u_palette, 0.0, 2.0);
+      vec3 a = mix(a0, a1, smoothstep(0.5,1.5,p));
+      a = mix(a, a2, smoothstep(1.5,2.0,p));
+      return vec3(0.5 + 0.5*cos(6.28318*(a*t + vec3(0.0,0.25,0.5))));
+    }
+
+    // flow vector from fbm: returns -1..1 vector
+    vec2 flowField(vec2 uv, float t){
+      float sx = fbm(uv*1.6 + vec2(t*0.02, t*-0.015));
+      float sy = fbm(uv*1.6 + vec2(t*-0.01, t*0.025) + 5.2);
+      return vec2(sx-0.5, sy-0.5);
+    }
+
+    void main(){
+      vec2 uv = vUv;
+      vec2 aspect = vec2(u_resolution.x / u_resolution.y, 1.0);
+      vec2 p = (uv - 0.5) * aspect;
+
+      // read previous (advected)
+    // flow scaled by UI-controlled strength
+    vec2 f = flowField(uv, u_time) * (0.5 * u_speed / 60.0) * u_flowStrength;
+      // advect backwards to sample previous frame
+      vec2 uvPrev = uv - f;
+      // clamp to edge to avoid wrapping artifacts
+      uvPrev = clamp(uvPrev, 0.0, 1.0);
+      vec3 prevCol = texture2D(u_prev, uvPrev).rgb;
+      float prevE = dot(prevCol, vec3(0.333));
+
+      // masks
+      vec4 mask = texture2D(u_text, uv);
+      vec4 boost = texture2D(u_boost, uv);
+
+  // emit from text + boost with turbulent modulation
+  float tmod = fbm(uv*8.0 + u_time*0.6);
+  // base emission from mask
+  float baseEmit = (mask.r * (0.4 + 1.0*tmod) + pow(boost.r,1.3) * 0.9) * u_gain * u_prominence;
+      float emit = baseEmit;
+      // optional fractal emission: sample scaled and rotated copies of the mask outward
+      if(u_emitFractal > 0.5){
+        float acc = 0.0;
+        float scale = u_fractScale;
+        float weight = 0.8;
+        vec2 center = vec2(u_centerX, u_centerY);
+        for(int i=1;i<=8;i++){
+          if(float(i) > u_fractIter) break;
+          float fi = float(i);
+          float s = pow(scale, fi);
+          // compute rotation per iteration
+          float a = u_rotateIter * fi + u_time * 0.02 * fi;
+          float ca = cos(a), sa = sin(a);
+          vec2 rel = uv - center;
+          // rotate and scale
+          vec2 r = vec2(ca*rel.x - sa*rel.y, sa*rel.x + ca*rel.y) / s;
+          vec2 suv = center + r;
+          float m = texture2D(u_text, clamp(suv,0.0,1.0)).r;
+          // color driven by sampled mask and iteration index
+          acc += m * pow(weight, fi) * (0.8 + 0.2*fi);
+        }
+        emit += acc * 1.2 * u_fractStrength;
+      }
+
+      // choker: sweeping angular highlight around center that boosts emission and fractals
+      float chokerBoost = 0.0;
+      if(u_choker > 0.5){
+        vec2 center = vec2(u_centerX, u_centerY);
+        vec2 rel = uv - center;
+        float radius = length(rel);
+        float angle = atan(rel.y, rel.x);
+        // moving target angle
+        float target = u_time * u_chokerSpeed;
+        float diff = abs(mod(angle - target + 3.14159, 6.28318) - 3.14159);
+        float ring = smoothstep(u_chokerWidth, 0.0, abs(diff)) * exp(-radius*2.0);
+        chokerBoost = ring * u_chokerIntensity;
+        // boost emission strongly where choker overlaps text mask
+        emit += chokerBoost * mask.r * 2.0;
+      }
+
+      // allow flow-driven spread: sample a displaced prev sample in the flow direction for extra spreading
+      vec2 neighborUv = uv + normalize(f + vec2(0.0001,0.0)) * 0.0025;
+      neighborUv = clamp(neighborUv, 0.0, 1.0);
+      float spread = texture2D(u_prev, neighborUv).r;
+
+      float grow = max(emit, spread * 0.95);
+
+      // accumulate with decay (preserve prev but decay slowly)
+      float outE = prevE * u_decay + grow * (1.0 - u_decay);
+
+      // When two-tone mode is requested, produce pure black/white tree-like growths
+      if(u_twoTone > 0.5){
+        // base energy from accumulated emission (including fractals and choker boosts)
+        float energy = outE * (1.0 + 0.4 * u_fractStrength);
+        // reinforce near the mask so growth starts at letters
+        energy = max(energy, mask.r * 1.2 + pow(boost.r,1.6) * 0.9);
+        // add high-frequency detail to create branching edges
+        float hf = fbm(uv * 60.0 + u_time * 0.6);
+        energy += 0.45 * (hf - 0.5) * pow(energy + 0.001, 0.6);
+        // optionally boost during choker sweep
+        energy += chokerBoost * 0.6;
+        // threshold into binary branches; slightly soften threshold with smoothstep
+        float t = smoothstep(u_bwThreshold - 0.03, u_bwThreshold + 0.03, energy);
+        // thin the branches by sampling a small neighborhood and combining
+        float n = 0.0;
+        n += texture2D(u_prev, uv).r * 0.5;
+        n += texture2D(u_prev, uv + vec2(0.002,0)).r * 0.125;
+        n += texture2D(u_prev, uv + vec2(-0.002,0)).r * 0.125;
+        n += texture2D(u_prev, uv + vec2(0,0.002)).r * 0.125;
+        n += texture2D(u_prev, uv + vec2(0,-0.002)).r * 0.125;
+        // combine current threshold with neighbor presence to keep branches connected
+        float branch = max(t, n * 0.95);
+        vec3 bw = vec3(branch);
+        gl_FragColor = vec4(bw, 1.0);
+      }else{
+        // Fully text-driven color: text mask + fractals produce all colors
+        float textMaskVal = mask.r;
+        // base text color from palette; bias by time for subtle movement
+        vec3 textColor = palette(textMaskVal * 0.95 + u_time*0.02);
+        // subtle flow tint for streaking
+        float ang = atan(f.y, f.x) / 6.28318;
+        vec3 flowTint = palette(fract(ang + 0.25));
+
+        // Make color dominated by textColor and amplified by accumulated energy
+        vec3 color = textColor * (0.15 + 5.0 * outE) + flowTint * (0.15 * outE);
+
+        // stronger rim glow using boost mask difference
+        float halo = clamp(boost.r - mask.r, 0.0, 1.0);
+        float rim = smoothstep(0.01, 0.6, halo) * u_glow * u_prominence;
+        color += vec3(1.0,0.8,0.6) * rim * (1.0 + 2.5 * outE);
+
+        // fade to black at outer edges so there's no paper background; keeps focus on text
+        float edge = smoothstep(0.9, 1.2, length(p));
+        color *= (1.0 - edge);
+
+        gl_FragColor = vec4(clamp(color, 0.0, 1.0), 1.0);
+      }
+    }
+    `;
+
+    const vs = compile(gl.VERTEX_SHADER, quadVS);
+    const fs = compile(gl.FRAGMENT_SHADER, frag);
+    const prog = link(vs, fs);
+    gl.useProgram(prog);
+
+    // attributes
+    const aPos = gl.getAttribLocation(prog, 'aPos');
+    const quad = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, quad); gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+    gl.enableVertexAttribArray(aPos); gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+  // uniforms
+  const u_time = gl.getUniformLocation(prog, 'u_time');
+  const u_resolution = gl.getUniformLocation(prog, 'u_resolution');
+  const u_text = gl.getUniformLocation(prog, 'u_text');
+  const u_boost = gl.getUniformLocation(prog, 'u_boost');
+  const u_prev = gl.getUniformLocation(prog, 'u_prev');
+  const u_speed = gl.getUniformLocation(prog, 'u_speed');
+  const u_gain = gl.getUniformLocation(prog, 'u_gain');
+  const u_decay = gl.getUniformLocation(prog, 'u_decay');
+  const u_prominence = gl.getUniformLocation(prog, 'u_prominence');
+  const u_glow = gl.getUniformLocation(prog, 'u_glow');
+  const u_flowStrength = gl.getUniformLocation(prog, 'u_flowStrength');
+  const u_palette = gl.getUniformLocation(prog, 'u_palette');
+  const u_emitFractal = gl.getUniformLocation(prog, 'u_emitFractal');
+  const u_fractIter = gl.getUniformLocation(prog, 'u_fractIter');
+  const u_fractScale = gl.getUniformLocation(prog, 'u_fractScale');
+  const u_centerX = gl.getUniformLocation(prog, 'u_centerX');
+  const u_centerY = gl.getUniformLocation(prog, 'u_centerY');
+  const u_rotateIter = gl.getUniformLocation(prog, 'u_rotateIter');
+  const u_textDominance = gl.getUniformLocation(prog, 'u_textDominance');
+  const u_fractStrength = gl.getUniformLocation(prog, 'u_fractStrength');
+  const u_twoTone = gl.getUniformLocation(prog, 'u_twoTone');
+  const u_bwThreshold = gl.getUniformLocation(prog, 'u_bwThreshold');
+  const u_choker = gl.getUniformLocation(prog, 'u_choker');
+  const u_chokerSpeed = gl.getUniformLocation(prog, 'u_chokerSpeed');
+  const u_chokerWidth = gl.getUniformLocation(prog, 'u_chokerWidth');
+  const u_chokerIntensity = gl.getUniformLocation(prog, 'u_chokerIntensity');
+
+    // create 2D canvases for text and boost
+    // makeTextMask(w,h, mainText, subText) -> each word in mainText is drawn on its own centered line; subText (if provided) is drawn as final line
+    function makeTextMask(w,h, mainText = 'NYC Climate Week', subText = '2025'){ 
+      const c = document.createElement('canvas'); c.width = w; c.height = h; const ctx = c.getContext('2d');
+      // background
+      ctx.fillStyle = 'black'; ctx.fillRect(0,0,w,h);
+      ctx.fillStyle = 'white'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+
+      // split mainText into words and stack them; include subText as last line if present
+      const words = ('' + (mainText || '')).trim().split(/\s+/).filter(Boolean);
+      const lines = words.slice();
+      if(subText && (''+subText).trim().length > 0) lines.push(('' + subText).trim());
+
+      // choose font size so stacked lines fit comfortably
+      const lineGapFactor = 0.92; // line spacing relative to font size
+      let fs = Math.floor(Math.min(160, w * 0.08));
+      // if too tall, reduce font size to fit ~75% of canvas height
+      const estimated = fs * lines.length * lineGapFactor;
+      if(estimated > h * 0.75){ fs = Math.max(12, Math.floor((h * 0.75) / (Math.max(1, lines.length) * lineGapFactor))); }
+      ctx.font = 'bold ' + fs + 'px sans-serif';
+
+      // vertical center the block of lines
+      const startY = h * 0.5 - ((lines.length - 1) * fs * lineGapFactor) * 0.5;
+      for(let i = 0; i < lines.length; i++){
+        const y = startY + i * fs * lineGapFactor;
+        ctx.fillText(lines[i], w/2, y);
+      }
+      return c;
+    }
+    function makeBoost(w,h,txt){ const c=document.createElement('canvas'); c.width=w; c.height=h; const ctx=c.getContext('2d'); ctx.drawImage(txt,0,0); // simple gaussian blur -> use multiple scaled draws
+      // cheap blur: draw scaled down and up
+      const s = 0.08; const sw = Math.max(1, Math.floor(w*s)); const sh = Math.max(1, Math.floor(h*s)); const tmp=document.createElement('canvas'); tmp.width=sw; tmp.height=sh; tmp.getContext('2d').drawImage(c,0,0,sw,sh); ctx.clearRect(0,0,w,h); ctx.drawImage(tmp,0,0, w, h); return c; }
+
+  // initial text from UI
+  const mainInput = document.getElementById('mainText');
+  const subInput = document.getElementById('subText');
+  const speedInput = document.getElementById('speed');
+  const strengthInput = document.getElementById('strength');
+  const resetBtn = document.getElementById('resetBtn');
+  const regenBtn = document.getElementById('regenBtn');
+
+  let textCanvas = makeTextMask(canvas.width, canvas.height, mainInput.value, subInput.value);
+  let boostCanvas = makeBoost(canvas.width, canvas.height, textCanvas);
+
+    // upload textures
+    function makeTexture(img){
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      // flip Y because HTML canvas has top-left origin while WebGL textures are bottom-left
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,img);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      // reset to default (don't rely on state elsewhere)
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      return tex;
+    }
+  let texText = makeTexture(textCanvas);
+  let texBoost = makeTexture(boostCanvas);
+
+  // create ping-pong textures for feedback accumulation
+  function makeEmptyTex(w,h){ const tex = gl.createTexture(); gl.bindTexture(gl.TEXTURE_2D, tex); gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,w,h,0,gl.RGBA,gl.UNSIGNED_BYTE,null); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE); return tex; }
+  let prevA = makeEmptyTex(canvas.width, canvas.height);
+  let prevB = makeEmptyTex(canvas.width, canvas.height);
+  const fbo = gl.createFramebuffer();
+
+  // blit shader to display ping-pong result
+  const blitFrag = `precision mediump float; varying vec2 vUv; uniform sampler2D u_src; void main(){ gl_FragColor = texture2D(u_src, vUv); }`;
+  const blitFS = compile(gl.FRAGMENT_SHADER, blitFrag);
+  const blitProg = link(vs, blitFS);
+  const u_src = gl.getUniformLocation(blitProg, 'u_src');
+
+    function updateTextures(){
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, texText);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,textCanvas);
+      gl.uniform1i(u_text, 0);
+      gl.activeTexture(gl.TEXTURE1);
+      gl.bindTexture(gl.TEXTURE_2D, texBoost);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, true);
+      gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,boostCanvas);
+      gl.uniform1i(u_boost, 1);
+      // prev is on texture unit 2
+      gl.activeTexture(gl.TEXTURE2);
+      gl.bindTexture(gl.TEXTURE_2D, prevB);
+      gl.uniform1i(u_prev, 2);
+      // reset state
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+    }
+
+    // clear prev textures
+    function clearPrev(tex){ gl.bindFramebuffer(gl.FRAMEBUFFER, fbo); gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0); gl.viewport(0,0,canvas.width,canvas.height); gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT); gl.bindFramebuffer(gl.FRAMEBUFFER, null); }
+    clearPrev(prevA); clearPrev(prevB);
+
+    // render loop with ping-pong feedback
+    let start = performance.now();
+    function render(){
+      const now = performance.now(); const t = (now - start)/1000;
+      // update uniforms from UI
+  const speedVal = parseFloat(speedInput.value);
+  const gainVal = parseFloat(strengthInput.value);
+  const prominenceVal = parseFloat(document.getElementById('prominence').value);
+  const glowVal = parseFloat(document.getElementById('glow').value);
+  const decayVal = parseFloat(document.getElementById('decay').value);
+  const flowStrengthVal = parseFloat(document.getElementById('flowStrength').value);
+  const paletteVal = parseFloat(document.getElementById('palette').value);
+  const emitFractalVal = document.getElementById('emitFractal').checked ? 1.0 : 0.0;
+  const fractIterVal = parseFloat(document.getElementById('fractIter').value);
+  const fractScaleVal = parseFloat(document.getElementById('fractScale').value);
+  const useCentroid = document.getElementById('useCentroid').checked;
+  const centerXVal = parseFloat(document.getElementById('centerX').value);
+  const centerYVal = parseFloat(document.getElementById('centerY').value);
+  const rotateIterVal = parseFloat(document.getElementById('rotateIter').value);
+  const textDominanceVal = parseFloat(document.getElementById('textDominance').value);
+  const fractStrengthVal = parseFloat(document.getElementById('fractStrength').value);
+  const twoToneVal = document.getElementById('twoTone').checked ? 1.0 : 0.0;
+  const bwThresholdVal = parseFloat(document.getElementById('bwThreshold').value);
+  const chokerVal = document.getElementById('choker').checked ? 1.0 : 0.0;
+  const chokerSpeedVal = parseFloat(document.getElementById('chokerSpeed').value);
+  const chokerWidthVal = parseFloat(document.getElementById('chokerWidth').value);
+  const chokerIntensityVal = parseFloat(document.getElementById('chokerIntensity').value);
+  gl.useProgram(prog);
+  gl.uniform1f(u_time, t);
+  gl.uniform2f(u_resolution, canvas.width, canvas.height);
+  gl.uniform1f(u_speed, speedVal);
+  gl.uniform1f(u_gain, gainVal);
+  gl.uniform1f(u_decay, decayVal);
+  gl.uniform1f(u_prominence, prominenceVal);
+  gl.uniform1f(u_glow, glowVal);
+  gl.uniform1f(u_flowStrength, flowStrengthVal);
+  gl.uniform1f(u_palette, paletteVal);
+  gl.uniform1f(u_emitFractal, emitFractalVal);
+  gl.uniform1f(u_fractIter, fractIterVal);
+  gl.uniform1f(u_fractScale, fractScaleVal);
+      // compute centroid from textCanvas if requested
+      let cx = centerXVal, cy = centerYVal;
+      if(useCentroid){
+        try{
+          const tctx = textCanvas.getContext('2d');
+          const w = textCanvas.width, h = textCanvas.height;
+          const data = tctx.getImageData(0,0,w,h).data;
+          let sx=0, sy=0, s=0;
+          for(let y=0;y<h;y++){
+            for(let x=0;x<w;x++){
+              const i = (y*w + x)*4; const v = data[i]; // red channel (mask)
+              if(v>10){ sx += x * v; sy += y * v; s += v; }
+            }
+          }
+          if(s>0){ cx = (sx / s) / w; cy = (sy / s) / h; }
+        }catch(e){ /* fallback to provided center */ }
+      }
+      gl.uniform1f(u_centerX, cx);
+      gl.uniform1f(u_centerY, cy);
+      gl.uniform1f(u_rotateIter, rotateIterVal);
+      gl.uniform1f(u_textDominance, textDominanceVal);
+  gl.uniform1f(u_fractStrength, fractStrengthVal);
+  gl.uniform1f(u_twoTone, twoToneVal);
+  gl.uniform1f(u_bwThreshold, bwThresholdVal);
+  gl.uniform1f(u_choker, chokerVal);
+  gl.uniform1f(u_chokerSpeed, chokerSpeedVal);
+  gl.uniform1f(u_chokerWidth, chokerWidthVal);
+  gl.uniform1f(u_chokerIntensity, chokerIntensityVal);
+
+      // upload dynamic textures and bind prevB to unit 2
+      updateTextures();
+
+      // render into prevA using main shader (sampling prevB)
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, prevA, 0);
+      gl.viewport(0,0,canvas.width,canvas.height);
+      gl.clearColor(0,0,0,1); gl.clear(gl.COLOR_BUFFER_BIT);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      // blit prevA to screen
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      gl.useProgram(blitProg);
+      gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, prevA); gl.uniform1i(u_src, 0);
+      gl.viewport(0,0,canvas.width,canvas.height);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+
+      // swap prevA/prevB
+      let tmp = prevA; prevA = prevB; prevB = tmp;
+
+      requestAnimationFrame(render);
+    }
+    render();
+
+  // handle resize with regenerating masks
+  window.addEventListener('resize', ()=>{ resize(); textCanvas = makeTextMask(canvas.width, canvas.height, mainInput.value, subInput.value); boostCanvas = makeBoost(canvas.width, canvas.height, textCanvas); texText = makeTexture(textCanvas); texBoost = makeTexture(boostCanvas); prevA = makeEmptyTex(canvas.width, canvas.height); prevB = makeEmptyTex(canvas.width, canvas.height); clearPrev(prevA); clearPrev(prevB); });
+
+  // UI handlers
+  regenBtn.addEventListener('click', ()=>{ textCanvas = makeTextMask(canvas.width, canvas.height, mainInput.value, subInput.value); boostCanvas = makeBoost(canvas.width, canvas.height, textCanvas); texText = makeTexture(textCanvas); texBoost = makeTexture(boostCanvas); });
+  resetBtn.addEventListener('click', ()=>{ clearPrev(prevA); clearPrev(prevB); });
+  // save PNG
+  const saveBtn = document.getElementById('saveBtn');
+  saveBtn.addEventListener('click', ()=>{
+    // read pixels from the WebGL canvas and convert to blob via 2D canvas
+    const w = canvas.width; const h = canvas.height;
+    const pixels = new Uint8Array(w*h*4);
+    gl.readPixels(0,0,w,h,gl.RGBA,gl.UNSIGNED_BYTE,pixels);
+    // flip Y while copying into 2D canvas
+    const out = document.createElement('canvas'); out.width = w; out.height = h; const ctx = out.getContext('2d'); const imgData = ctx.createImageData(w,h);
+    for(let y=0;y<h;y++){
+      const srcRow = (h-1-y)*w*4;
+      const dstRow = y*w*4;
+      for(let x=0;x<w*4;x++) imgData.data[dstRow + x] = pixels[srcRow + x];
+    }
+    ctx.putImageData(imgData,0,0);
+    out.toBlob((b)=>{ const url = URL.createObjectURL(b); const a = document.createElement('a'); a.href = url; a.download = 'climate-growth.png'; document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url); });
+  });
+
+  // dramatic preset button
+  const dramBtn = document.getElementById('dramBtn');
+  dramBtn.addEventListener('click', ()=>{
+    document.getElementById('emitFractal').checked = true;
+    document.getElementById('fractIter').value = 6;
+    document.getElementById('fractScale').value = 1.18;
+    document.getElementById('prominence').value = 2.6;
+    document.getElementById('glow').value = 1.8;
+    document.getElementById('textDominance').value = 2.5;
+    document.getElementById('flowStrength').value = 0.6;
+    // reset accumulation for fresh look
+    clearPrev(prevA); clearPrev(prevB);
+  });
+  </script>
+</body>
+</html>
