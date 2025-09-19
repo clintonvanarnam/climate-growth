@@ -13,12 +13,12 @@
     canvas{display:block}
   </style>
 </head>
-<body>
+
 <script>
 console.log('voronoi.html loaded — Delaunay Voronoi (vector)', {ts: new Date().toISOString()});
 // Delaunay-based Voronoi renderer using d3-delaunay for crisp polygons
 new p5((p)=>{
-  let W,H; let seeds=[], baseSeeds=[]; let t=0, running=true; let vorLayer, maskLayer; let phrase = "DESIGNING NYC’S CLIMATE FUTURE", subphrase='', year='';
+  let W,H; let seeds=[], baseSeeds=[]; let t=0, running=true; let vorLayer, maskLayer; let phrase = "Designing\nNYC‘s\nClimate\nFuture", subphrase='', year='';
   // maskPhrase is used to build the sampling mask (controls density). Keep it separate
   // from the visible `phrase` so the typography can affect density even when
   // nothing is drawn on-screen.
@@ -32,7 +32,7 @@ new p5((p)=>{
   // mask mode: 'text' or 'image'
   let MASK_MODE = 'text';
   // image scale multiplier (user-adjustable)
-  let maskImageScale = 1.6;
+  let maskImageScale = 1.0;
   let maskScaleSlider = null;
   // debug: show raw source image on top so we can confirm it's loading
   let showRawImage = true;
@@ -62,13 +62,13 @@ new p5((p)=>{
       }catch(e){ console.warn('Error loading font', path, e); tryLoad(i+1); }
     }
     tryLoad(0);
-    // try loading mask image from assets
+    // try loading mask image from assets (now SVG for better vector masking)
     try{
-      p.loadImage('assets/WXY-WALTER.png',
-        (img)=>{ maskImage = img; console.log('Mask image loaded from assets/WXY-WALTER.png'); },
-        ()=>{ console.warn('Failed to load mask image at assets/WXY-WALTER.png'); }
+      p.loadImage('assets/w2.svg',
+        (img)=>{ maskImage = img; console.log('Mask SVG loaded from assets/w.svg'); },
+        ()=>{ console.warn('Failed to load mask SVG at assets/w.svg'); }
       );
-    }catch(e){ console.warn('Error loading mask image', e); }
+    }catch(e){ console.warn('Error loading mask SVG', e); }
   };
   let NUM_SEEDS = 20000; const NOISE_SPEED = 0.12;
   const LLOYD_ITERS = 20;
@@ -129,6 +129,11 @@ new p5((p)=>{
         if (seedsSlider) seedsSlider.hide();
         if (cellSizeSlider) cellSizeSlider.hide();
   if (phraseInput) phraseInput.hide();
+        if (maskSelect) maskSelect.hide();
+        if (maskScaleSlider) maskScaleSlider.hide();
+        if (showRawImageCheckbox) showRawImageCheckbox.hide();
+        if (maskThresholdSlider) maskThresholdSlider.hide();
+        if (invertMaskCheckbox) invertMaskCheckbox.hide();
         // hide cursor
         p.noCursor();
       } else {
@@ -139,6 +144,11 @@ new p5((p)=>{
         if (seedsSlider) seedsSlider.show();
         if (cellSizeSlider) cellSizeSlider.show();
   if (phraseInput) phraseInput.show();
+        if (maskSelect) maskSelect.show();
+        if (maskScaleSlider) maskScaleSlider.show();
+        if (showRawImageCheckbox) showRawImageCheckbox.show();
+        if (maskThresholdSlider) maskThresholdSlider.show();
+        if (invertMaskCheckbox) invertMaskCheckbox.show();
         p.cursor();
       }
     }catch(e){ console.warn('toggleUI error', e); }
@@ -151,7 +161,7 @@ new p5((p)=>{
     const prevUI = RENDER_UI;
     RENDER_UI = false;
     // hide DOM widgets if present
-    try{ if (strokeSlider) strokeSlider.hide(); if (bgPicker) bgPicker.hide(); if (linePicker) linePicker.hide(); }catch(e){}
+    try{ if (strokeSlider) strokeSlider.hide(); if (bgPicker) bgPicker.hide(); if (linePicker) linePicker.hide(); if (resolutionSlider) resolutionSlider.hide(); if (seedsSlider) seedsSlider.hide(); if (cellSizeSlider) cellSizeSlider.hide(); if (phraseInput) phraseInput.hide(); if (maskSelect) maskSelect.hide(); if (maskScaleSlider) maskScaleSlider.hide(); if (showRawImageCheckbox) showRawImageCheckbox.hide(); if (maskThresholdSlider) maskThresholdSlider.hide(); if (invertMaskCheckbox) invertMaskCheckbox.hide(); }catch(e){}
     // wait a short moment for the next frame to render without UI, then save
     setTimeout(()=>{
       try{
@@ -160,7 +170,7 @@ new p5((p)=>{
       }catch(e){ try{ p.saveCanvas('voronoi-text','png'); }catch(_){} }
       // restore UI
       RENDER_UI = prevUI;
-      try{ if (strokeSlider) strokeSlider.show(); if (bgPicker) bgPicker.show(); if (linePicker) linePicker.show(); }catch(e){}
+      try{ if (strokeSlider) strokeSlider.show(); if (bgPicker) bgPicker.show(); if (linePicker) linePicker.show(); if (resolutionSlider) resolutionSlider.show(); if (seedsSlider) seedsSlider.show(); if (cellSizeSlider) cellSizeSlider.show(); if (phraseInput) phraseInput.show(); if (maskSelect) maskSelect.show(); if (maskScaleSlider) maskScaleSlider.show(); if (showRawImageCheckbox) showRawImageCheckbox.show(); if (maskThresholdSlider) maskThresholdSlider.show(); if (invertMaskCheckbox) invertMaskCheckbox.show(); }catch(e){}
       p._saving = false;
     }, 80);
   }
@@ -262,13 +272,13 @@ new p5((p)=>{
   cellSizeSlider.position(12, 12 + 260);
   cellSizeSlider.input(()=>{
     const cell = Math.max(2, Math.round(cellSizeSlider.value()));
-    // approximate number of seeds so average cell ~ cell*cell area
-    const area = Math.max(1, W * H);
+    // use mask white area for image mode, else canvas area
+    const area = MASK_MODE === 'image' ? (maskWhiteArea / (RENDER_SCALE * RENDER_SCALE)) : (W * H);
     const approx = Math.max(100, Math.min(20000, Math.round(area / (cell * cell))));
     NUM_SEEDS = approx;
     if (seedsSlider) seedsSlider.value(NUM_SEEDS);
     rebuildSeeds();
-  console.log('cell size ->', cell, 'NUM_SEEDS ->', NUM_SEEDS);
+  console.log('cell size ->', cell, 'NUM_SEEDS ->', NUM_SEEDS, 'area ->', area);
   });
 
   // create color pickers (bg and line)
@@ -301,7 +311,7 @@ new p5((p)=>{
     if (MASK_MODE === 'image'){
       if (!maskImage){
         // try to load again
-        p.loadImage('assets/WXY-WALTER.png', (img)=>{ maskImage = img; drawMaskImage(); rebuildSeeds(); }, ()=>{ console.warn('Mask image not available'); });
+        p.loadImage('assets/w.svg', (img)=>{ maskImage = img; drawMaskImage(); rebuildSeeds(); }, ()=>{ console.warn('Mask SVG not available'); });
       } else { drawMaskImage(); rebuildSeeds(); }
     } else {
       drawMaskText(); rebuildSeeds();
@@ -477,7 +487,7 @@ new p5((p)=>{
       // choose a base outline size (cap by width)
       const outlineSize = Math.min(220, Math.floor(W*0.2));
       p.textSize(outlineSize);
-  const words = (phrase||'').toUpperCase().split(/\s+/).filter(Boolean);
+  const words = (phrase||'').toUpperCase().split('\n').filter(Boolean);
       const lineH = Math.max(24, Math.floor(outlineSize * 0.9));
       // center the block vertically around H*0.38
       const baseY = H * 0.38;
@@ -494,21 +504,21 @@ new p5((p)=>{
   }
 
   // debugging: optionally draw the raw source image on top so user can confirm it loaded
-  if (MASK_MODE === 'image' && maskImage && showRawImage){
+  // disabled for image mode to avoid showing black parts; image affects density via mask
+  if (false && MASK_MODE === 'image' && maskImage && showRawImage){
     p.push();
     p.tint(255, 220);
-    // compute cover-fit same as drawMaskImage
+    // compute contain-fit same as drawMaskImage: center the whole image and keep it fully visible
     const iw = maskImage.width, ih = maskImage.height;
     const sw = maskLayer.width, sh = maskLayer.height;
-    const scale = Math.max(sw / iw, sh / ih) * (maskImageScale || 1);
+    const baseScale = Math.min(sw / iw, sh / ih);
+    const scale = baseScale * (maskImageScale || 1);
     const dw = Math.round(iw * scale), dh = Math.round(ih * scale);
     const dx = Math.round((sw - dw) * 0.5), dy = Math.round((sh - dh) * 0.5);
     // draw scaled image directly to main canvas (scale down from maskLayer coords)
     p.image(maskImage, dx / (maskLayer.width / W), dy / (maskLayer.height / H), dw / (maskLayer.width / W), dh / (maskLayer.height / H));
     p.pop();
-  }
-
-  // HUD: show tuning values and key hints (render only when RENDER_UI is true)
+  }  // HUD: show tuning values and key hints (render only when RENDER_UI is true)
   if (RENDER_UI) {
     p.push();
     p.noStroke();
@@ -529,6 +539,7 @@ new p5((p)=>{
     p.text(`      m/M decrease/increase mouse radius`, hudX, keysY + 32);
     p.text(`      f/F decrease/increase mouse force`, hudX, keysY + 48);
     p.text(`      R rebuild seeds`, hudX, keysY + 64);
+    p.text(`      1/2 decrease/increase cell size`, hudX, keysY + 80);
     p.pop();
   }
   };
@@ -544,7 +555,7 @@ new p5((p)=>{
   // size the mask text to fit the widest single word; make base size slightly larger
   let fs1 = Math.floor(Math.min(W*0.28, H*0.36) * 1.06);
   maskLayer.textSize(fs1);
-  const words = (maskPhrase||'').toUpperCase().split(/\s+/).filter(Boolean);
+  const words = (maskPhrase||'').toUpperCase().split('\n').filter(Boolean);
   // shrink until the widest word fits
   let widest = 0;
   for (const w of words) widest = Math.max(widest, maskLayer.textWidth(w));
@@ -561,68 +572,60 @@ new p5((p)=>{
   }
   // reset textStyle to normal (optional)
   maskLayer.textStyle(p.NORMAL);
+    // calculate white area for seed adjustment
+    try{
+      maskLayer.loadPixels();
+      const pixels = maskLayer.pixels;
+      maskWhiteArea = 0;
+      for (let i = 0; i < pixels.length; i += 4){
+        const r = pixels[i];
+        if (r > 128) maskWhiteArea++; // count white pixels
+      }
+      console.log('drawMaskText: white area pixels =', maskWhiteArea);
+    }catch(e){ console.warn('failed to calculate mask white area', e); }
     maskLayer.pop();
   }
 
-  // draw the mask from an image (maskImage) into maskLayer
+  // draw the mask from an SVG (maskImage) into maskLayer
   function drawMaskImage(){
     if (!maskLayer) return;
     maskLayer.push();
     maskLayer.clear();
-    // black background, white mask
-    // use pure black background so thresholding is predictable
+    // black background
     maskLayer.background(0);
     maskLayer.noStroke();
-    if (!maskImage) { maskLayer.pop(); return; }
-    // compute cover-fit so the image fills the mask layer (center-cropped)
+    if (!maskImage) { console.warn('drawMaskImage: maskImage is null, cannot draw mask'); maskLayer.pop(); return; }
+    // compute contain-fit so the whole SVG is visible and centered
     const iw = maskImage.width, ih = maskImage.height;
     const sw = maskLayer.width, sh = maskLayer.height;
-  const scale = Math.max(sw / iw, sh / ih) * (maskImageScale || 1);
-  const dw = Math.round(iw * scale), dh = Math.round(ih * scale);
-  const dx = Math.round((sw - dw) * 0.5), dy = Math.round((sh - dh) * 0.5);
-    // draw the source image onto the mask layer
+    const baseScale = Math.min(sw / iw, sh / ih);
+    const scale = baseScale * (maskImageScale || 1);
+    const dw = Math.round(iw * scale), dh = Math.round(ih * scale);
+    const dx = Math.round((sw - dw) * 0.5), dy = Math.round((sh - dh) * 0.5);
+    // draw the SVG onto the mask layer (white on transparent becomes white on black)
     maskLayer.push();
     maskLayer.imageMode(p.CORNER);
     maskLayer.tint(255);
-    maskLayer.image(maskImage, dx, dy, dw, dh);
+    // thicken the image like the text by drawing with offsets
+    const offsets = [[0,0],[1,0],[-1,0],[0,1],[0,-1],[2,0],[-2,0],[0,2],[0,-2]];
+    for (const off of offsets){
+      maskLayer.image(maskImage, dx + off[0], dy + off[1], dw, dh);
+    }
     maskLayer.pop();
-
-    // threshold pixels: treat darker pixels (black logo) as mask -> set white; otherwise black
+    // calculate white area for seed adjustment
     try{
       maskLayer.loadPixels();
       const pixels = maskLayer.pixels;
-      // detect whether there's useful alpha in the image
-      let alphaCount = 0;
-      for (let i = 0; i < pixels.length; i += 4){ if (pixels[i+3] > 10) alphaCount++; }
-      const useAlpha = alphaCount > (pixels.length / 4) * 0.01; // >1% opaque
-      if (useAlpha){
-        for (let i = 0; i < pixels.length; i += 4){
-          const a = pixels[i+3];
-          let maskOn = (a > 10);
-          if (invertMask) maskOn = !maskOn;
-          if (maskOn){ pixels[i] = pixels[i+1] = pixels[i+2] = 255; pixels[i+3] = 255; }
-          else { pixels[i] = pixels[i+1] = pixels[i+2] = 0; pixels[i+3] = 255; }
-        }
-        console.log('drawMaskImage: using alpha channel for mask (alphaCount=', alphaCount, ')');
-      } else {
-        // fallback to luminance thresholding
-        for (let i = 0; i < pixels.length; i += 4){
-          const r = pixels[i], g = pixels[i+1], b = pixels[i+2];
-          const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-          let maskOn = (lum < maskThreshold);
-          if (invertMask) maskOn = !maskOn;
-          if (maskOn){ pixels[i] = pixels[i+1] = pixels[i+2] = 255; pixels[i+3] = 255; }
-          else { pixels[i] = pixels[i+1] = pixels[i+2] = 0; pixels[i+3] = 255; }
-        }
-        console.log('drawMaskImage: using luminance thresholding (threshold=', maskThreshold, ')');
+      maskWhiteArea = 0;
+      for (let i = 0; i < pixels.length; i += 4){
+        const r = pixels[i];
+        if (r > 128) maskWhiteArea++; // count white pixels
       }
-      maskLayer.updatePixels();
-    }catch(e){ console.warn('mask image thresholding failed', e); }
-
+      console.log('drawMaskImage: white area pixels =', maskWhiteArea);
+    }catch(e){ console.warn('failed to calculate mask white area', e); }
+    console.log('drawMaskImage: SVG drawn to maskLayer');
     maskLayer.pop();
-  }
-
-  p.keyPressed = ()=>{
+  }  p.keyPressed = ()=>{
     if(p.key === ' ') running = !running;
   if(p.key==='S' || p.key==='s') p.saveCanvas('voronoi-text','png');
   if(p.key==='P' || p.key==='p') savePNG();
@@ -643,6 +646,32 @@ new p5((p)=>{
   if (p.key === 'f') { MOUSE_FORCE = Math.max(0, MOUSE_FORCE - 2); }
   if (p.key === 'F') { MOUSE_FORCE = Math.min(2000, MOUSE_FORCE + 2); }
   if (p.key === 'r' || p.key === 'R') { rebuildSeeds(); }
+  if (p.key === '1') {
+    if (cellSizeSlider) {
+      const val = Math.max(2, cellSizeSlider.value() - 1);
+      cellSizeSlider.value(val);
+      const cell = val;
+      const area = MASK_MODE === 'image' ? (maskWhiteArea / (RENDER_SCALE * RENDER_SCALE)) : (W * H);
+      const approx = Math.max(100, Math.min(20000, Math.round(area / (cell * cell))));
+      NUM_SEEDS = approx;
+      if (seedsSlider) seedsSlider.value(NUM_SEEDS);
+      rebuildSeeds();
+      console.log('cell size ->', cell, 'NUM_SEEDS ->', NUM_SEEDS, 'area ->', area);
+    }
+  }
+  if (p.key === '2') {
+    if (cellSizeSlider) {
+      const val = Math.min(160, cellSizeSlider.value() + 1);
+      cellSizeSlider.value(val);
+      const cell = val;
+      const area = MASK_MODE === 'image' ? (maskWhiteArea / (RENDER_SCALE * RENDER_SCALE)) : (W * H);
+      const approx = Math.max(100, Math.min(20000, Math.round(area / (cell * cell))));
+      NUM_SEEDS = approx;
+      if (seedsSlider) seedsSlider.value(NUM_SEEDS);
+      rebuildSeeds();
+      console.log('cell size ->', cell, 'NUM_SEEDS ->', NUM_SEEDS, 'area ->', area);
+    }
+  }
   };
 });
 </script>

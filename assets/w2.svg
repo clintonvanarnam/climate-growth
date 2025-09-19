@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg id="Layer_1" data-name="Layer 1" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 391.38 123.85">
+  <defs>
+    <style>
+      .cls-1, .cls-2, .cls-3, .cls-4 {
+        isolation: isolate;
+      }
+
+      .cls-2 {
+        letter-spacing: .03em;
+      }
+
+      .cls-2, .cls-3 {
+        font-family: ABCWalterNeueUnlicensedTrial-Bold, 'ABC Walter Neue Unlicensed Trial';
+        font-weight: 700;
+      }
+
+      .cls-2, .cls-3, .cls-4 {
+        fill: #fff;
+        font-size: 162.04px;
+      }
+
+      .cls-3 {
+        letter-spacing: .01em;
+      }
+
+      .cls-4 {
+        font-family: ABCWalterNeueUnlicensedTrial-Thin, 'ABC Walter Neue Unlicensed Trial';
+        font-weight: 200;
+        letter-spacing: .03em;
+      }
+    </style>
+  </defs>
+  <g class="cls-1">
+    <text class="cls-2" transform="translate(-1.24 118.13)"><tspan x="0" y="0">W</tspan></text>
+    <text class="cls-4" transform="translate(171.66 118.13)"><tspan x="0" y="0">X</tspan></text>
+    <text class="cls-3" transform="translate(275.2 118.13)"><tspan x="0" y="0">Y</tspan></text>
+  </g>
+</svg>
